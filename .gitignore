@@ -1,0 +1,17 @@
+# CMake and Go build output
+/build/
+/cmake-build-*/
+/onekvm-protocol-vnc
+/compile_commands.json
+/coverage.out
+
+# Rendered/package output
+/manifest.json
+*.ipk
+*.ipks
+
+# Local editor and OS files
+.DS_Store
+*.swp
+*.swo
+*~

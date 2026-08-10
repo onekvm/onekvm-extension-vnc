@@ -1,0 +1,14 @@
+OpenBMC source provenance
+=========================
+
+The HID keysym mapping in src/keymap.cpp, src/keymap.hpp, and
+src/scancodes.hpp is derived from OpenBMC obmc-ikvm:
+
+  https://github.com/openbmc/obmc-ikvm
+  commit ec3fad81ca9071a87e0a0b5744b1d066f30cc012
+
+The LibVNCServer lifecycle and Tight JPEG forwarding design in
+src/vnc_server.cpp is also derived from that revision's ikvm_server.cpp.
+OneKVM replaces OpenBMC's V4L2, USB gadget, D-Bus, Boost, and phosphor logging
+integration with OneKVM media IPC and its authenticated HID administration
+socket. OneKVM's modifications are distributed under GPL-2.0-only.

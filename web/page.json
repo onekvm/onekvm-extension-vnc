@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "columns": 1,
+  "sections": [
+    {
+      "title": "Endpoint",
+      "i18n": {"default": "Endpoint", "zh": "端点", "zh-TW": "端點"},
+      "columns": 1,
+      "settings": ["service_enabled", "listen_address", "port"]
+    },
+    {
+      "title": "Video",
+      "i18n": {"default": "Video", "zh": "视频", "zh-TW": "視訊"},
+      "columns": 1,
+      "settings": ["fps", "jpeg_quality"]
+    },
+    {
+      "title": "Access control",
+      "i18n": {"default": "Access control", "zh": "访问控制", "zh-TW": "存取控制"},
+      "columns": 1,
+      "settings": ["access_control_enabled", "password"]
+    }
+  ]
+}

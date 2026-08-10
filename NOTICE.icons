@@ -1,0 +1,11 @@
+Papirus VNC Viewer icon
+
+File: web/vnc.svg
+Source: https://github.com/PapirusDevelopmentTeam/papirus-icon-theme
+Upstream path: Papirus/24x24/apps/vncviewer.svg
+Upstream commit: 1b926382757f685622901f9c17a9abce66415ff0
+Copyright: Papirus Development Team and contributors
+License: GPL-3.0-only
+License text: LICENSES/Papirus-GPL-3.0.txt
+Modifications: expanded the background to the full 24x24 canvas, removed the
+Papirus bevel/highlight layers, and enlarged the foreground mark.

@@ -1,0 +1,67 @@
+{
+  "manifest_version": 1,
+  "id": "vnc",
+  "i18n": {
+    "default": {
+      "name": "VNC",
+      "description": "Remote framebuffer access with Tight JPEG video plus keyboard, pointer, and extra mouse-button input."
+    },
+    "zh": {
+      "name": "VNC",
+      "description": "通过 Tight JPEG 视频远程访问画面，并支持键盘、指针和鼠标扩展按键输入。"
+    },
+    "zh-TW": {
+      "name": "VNC",
+      "description": "透過 Tight JPEG 視訊遠端存取畫面，並支援鍵盤、指標和滑鼠擴充按鍵輸入。"
+    }
+  },
+  "version": "@VERSION@",
+  "api_version": 2,
+  "architecture": "@ARCH@",
+  "kind": "protocol",
+  "author": "OneKVM",
+  "homepage": "https://github.com/onekvm/onekvm-extension-vnc",
+  "entrypoint": "bin/onekvm-protocol-vnc",
+  "permissions": ["network"],
+  "capabilities": ["video.mjpeg", "hid"],
+  "services": [{
+    "id": "server",
+    "i18n": {
+      "default": {"name": "VNC server", "description": "Remote framebuffer access service."},
+      "zh": {"name": "VNC 服务", "description": "提供远程帧缓冲访问。"},
+      "zh-TW": {"name": "VNC 服務", "description": "提供遠端畫面緩衝區存取。"}
+    }
+  }],
+  "icon": {"source": "custom", "path": "web/vnc.svg"},
+  "page": {
+    "title": "VNC",
+    "renderer": "layout",
+    "entrypoint": "web/page.json"
+  },
+  "lifecycle": {
+    "enable": ["bin/onekvm-protocol-vnc", "--lifecycle", "enable"],
+    "disable": ["bin/onekvm-protocol-vnc", "--lifecycle", "disable"]
+  },
+  "settings_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["service_enabled", "listen_address", "port", "access_control_enabled", "password", "fps", "jpeg_quality"],
+    "properties": {
+      "service_enabled": {"type": "boolean", "title": "VNC server", "i18n": {"default": "VNC server", "zh": "VNC 服务", "zh-TW": "VNC 服務"}, "default": true},
+      "listen_address": {"type": "string", "title": "Bind interface", "i18n": {"default": "Bind interface", "zh": "绑定接口", "zh-TW": "綁定介面"}, "format": "network-address", "default": "0.0.0.0", "maxLength": 64},
+      "port": {"type": "integer", "title": "Port", "i18n": {"default": "Port", "zh": "端口", "zh-TW": "連接埠"}, "default": 5900, "minimum": 1, "maximum": 65535},
+      "access_control_enabled": {"type": "boolean", "title": "Require password", "i18n": {"default": "Require password", "zh": "启用密码鉴权", "zh-TW": "要求密碼"}, "default": false},
+      "password": {"type": "string", "title": "Password", "i18n": {"default": "Password", "zh": "密码", "zh-TW": "密碼"}, "format": "password", "default": "", "maxLength": 8, "enabled_when": {"field": "access_control_enabled", "equals": true}, "required_when": {"field": "access_control_enabled", "equals": true}},
+      "fps": {"type": "integer", "title": "Frame rate", "i18n": {"default": "Frame rate", "zh": "帧率", "zh-TW": "影格率"}, "default": 60, "minimum": 1, "maximum": 60},
+      "jpeg_quality": {"type": "integer", "title": "JPEG quality", "i18n": {"default": "JPEG quality", "zh": "JPEG 画质", "zh-TW": "JPEG 畫質"}, "default": 20, "minimum": 1, "maximum": 100}
+    }
+  },
+  "secret_fields": ["/password"],
+  "memory_budget": "4M",
+  "resource_limits": {"memory_max": "32M", "cpu_quota": "50%", "tasks_max": 32, "limit_nofile": 128},
+  "healthcheck": {
+    "type": "exec",
+    "command": ["bin/onekvm-protocol-vnc", "--health"],
+    "timeout_seconds": 5
+  }
+}
