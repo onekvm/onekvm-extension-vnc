@@ -2,17 +2,70 @@
 
 English | [简体中文](README.zh-CN.md)
 
-> **Build note:** This repository contains extension sources only. The
-> extension is built and packaged by the OpenEmbedded recipes in
-> `onekvm-distro`; this repository does not provide a standalone release build.
+Access the computer connected to OneKVM with a standard VNC client. This
+out-of-process protocol extension forwards hardware MJPEG frames through the
+Tight JPEG path and sends keyboard and pointer input through OneKVM's
+authenticated extension control socket.
 
-Out-of-process VNC support for OneKVM. The repository owns its runtime,
-manifest, settings layout, tests, and release version independently from the
-core OS repository.
+> **Build note:** This repository contains extension sources only. Release
+> packages are built by the OpenEmbedded recipes in `onekvm-distro`; this
+> repository does not provide a standalone release build.
 
-The runtime is C++20 and uses LibVNCServer's OpenBMC-proven Tight JPEG path.
-It forwards OneKVM's hardware MJPEG frames without decoding or re-encoding
-them, and routes keyboard and pointer reports through the authenticated OneKVM
-extension control socket.
+## Features
 
-See `NOTICE.openbmc` for the exact upstream revision and adaptation scope.
+- Tight JPEG video using OneKVM's hardware MJPEG frames
+- No video decode or re-encode in the VNC runtime
+- Keyboard, absolute pointer, and additional mouse-button input
+- Configurable bind address, TCP port, frame rate, and JPEG quality
+- Optional classic VNC password authentication
+
+## Install and enable
+
+The package name is `onekvm-extension-vnc`. Install it through your OneKVM
+distribution package or image, then manage it with the plugin manager:
+
+```sh
+onekvm-plugin-manager enable vnc
+onekvm-plugin-manager disable vnc
+```
+
+## Configure and connect
+
+Open the **VNC** extension settings. The server listens on `0.0.0.0:5900` by
+default, so a client can normally connect to:
+
+```text
+<your-onekvm-host>:5900
+```
+
+Frame rate can be set from 1 to 60 FPS and JPEG quality from 1 to 100. Classic
+VNC authentication accepts passwords of at most eight characters. Because that
+authentication scheme is weak and does not encrypt the session, expose the
+service only on a trusted network or through a VPN.
+
+## How it works
+
+The C++20 runtime uses LibVNCServer's OpenBMC-proven Tight JPEG path. It passes
+OneKVM's MJPEG frames to VNC clients without decoding or re-encoding them, then
+maps client input to authenticated OneKVM HID operations. Extension lifecycle
+hooks start and stop the server independently of Core.
+
+## Development
+
+Build the optional keymap test with CMake:
+
+```sh
+cmake -S . -B build -DONEKVM_BUILD_TESTS=ON
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+See [`NOTICE.openbmc`](NOTICE.openbmc) for the exact upstream revision and
+adaptation scope. Icon provenance is documented in
+[`NOTICE.icons`](NOTICE.icons).
+
+## License
+
+This project is licensed under the GNU General Public License v2.0. See
+[`LICENSE`](LICENSE). Bundled or adapted upstream components retain the license
+terms identified by their notice and license files.
