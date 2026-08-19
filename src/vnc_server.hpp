@@ -100,6 +100,7 @@ private:
                              rfbFramebufferUpdateRequestMsg *request);
   static void KeyEvent(rfbBool down, rfbKeySym key, rfbClientPtr client);
   static void PointerEvent(int button_mask, int x, int y, rfbClientPtr client);
+  static void DisplayHook(rfbClientPtr client);
   static rfbBool ContinuousNewClient(rfbClientPtr client, void **data);
   static rfbBool ContinuousEnablePseudoEncoding(rfbClientPtr client,
                                                 void **data,

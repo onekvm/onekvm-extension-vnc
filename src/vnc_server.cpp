@@ -347,6 +347,7 @@ VNCServer::VNCServer(const Config &config, Identity identity,
   server_->newClientHook = NewClient;
   server_->kbdAddEvent = KeyEvent;
   server_->ptrAddEvent = PointerEvent;
+  server_->displayHook = DisplayHook;
   server_->port = config_.port;
   server_->ipv6port = -1;
 
@@ -468,6 +469,16 @@ void VNCServer::PointerEvent(int button_mask, int x, int y,
   server->input_.Pointer(button_mask, x, y);
 }
 
+void VNCServer::DisplayHook(rfbClientPtr client) {
+  if (client == nullptr)
+    return;
+  /* LibVNCServer otherwise replies with Raw/ZRLE/Ultra/Hextile/etc. This
+     process only originates Tight JPEG or a decoded RGB fallback. */
+  client->enableSupportedEncodings = FALSE;
+  client->enableSupportedMessages = FALSE;
+  client->enableServerIdentity = FALSE;
+}
+
 rfbBool VNCServer::ContinuousNewClient(rfbClientPtr, void **data) {
   *data = nullptr;
   return TRUE;
@@ -586,8 +597,11 @@ bool VNCServer::Resize(std::uint16_t width, std::uint16_t height,
 }
 
 bool VNCServer::ClientWantsTightJPEG(rfbClientPtr client) const {
-  if (client == nullptr || client->preferredEncoding != rfbEncodingTight)
+  if (client == nullptr)
     return false;
+  /* Quality/fine-quality pseudo-encodings mean the client can decode Tight
+     JPEG. Do not require preferredEncoding==Tight: many clients list ZRLE
+     first and still accept JPEG. */
 #ifdef LIBVNCSERVER_HAVE_LIBJPEG
   return client->tightQualityLevel >= 0 || client->turboQualityLevel >= 0;
 #else

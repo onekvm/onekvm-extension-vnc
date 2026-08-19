@@ -43,10 +43,10 @@ onekvm-plugin-manager disable vnc
 
 ## 实现说明
 
-C++20 运行时使用 LibVNCServer。对协商了 Tight JPEG 质量等级的客户端，
-直接转发 OneKVM 的硬件 MJPEG 帧；对其它编码（Raw / ZRLE / Hextile）则
-把 JPEG 解到 RGB565 帧缓冲，只标记变化的 32×32 块再交给 LibVNCServer。
-客户端输入映射为已鉴权的 OneKVM HID 操作。
+C++20 运行时使用 LibVNCServer。服务器不再回包广告 Raw/ZRLE/Ultra 等
+并未实现的编码。协商了 Tight JPEG 质量等级的客户端直接收硬件 MJPEG；
+未声明 JPEG 的客户端才回退到 RGB 帧缓冲（Raw / ZRLE / Hextile，32×32
+脏矩形）。客户端输入映射为已鉴权的 OneKVM HID 操作。
 
 ## 开发
 
