@@ -88,6 +88,7 @@ private:
     bool force_update = false;
     bool continuous_supported = false;
     bool continuous_enabled = false;
+    bool logged_encoding = false;
     std::uint64_t last_sequence = 0;
     std::unique_ptr<SessionReporter> session_reporter;
   };
@@ -114,7 +115,11 @@ private:
   bool Resize(std::uint16_t width, std::uint16_t height, std::string &error);
   bool SendJPEG(rfbClientPtr client, const JPEGFrame &frame,
                 std::string &error);
-  void SuppressDefaultUpdates();
+  bool SendFramebuffer(rfbClientPtr client, bool force_update,
+                       std::string &error);
+  bool ClientWantsTightJPEG(rfbClientPtr client) const;
+  bool DecodeLatestFrame(const JPEGFrame &frame, std::string &error);
+  void SuppressTightJPEGUpdates();
   void ClearLatestFrame();
 
   Config config_;
@@ -124,6 +129,8 @@ private:
   rfbScreenInfoPtr server_ = nullptr;
   std::string desktop_name_;
   std::vector<char> framebuffer_;
+  std::vector<std::uint16_t> previous_rgb_;
+  std::uint64_t decoded_sequence_ = 0;
   std::array<char *, 2> password_list_{};
   std::string listen6_interface_;
   std::unique_ptr<MediaSubscription> subscription_;
@@ -133,7 +140,8 @@ private:
   std::mutex frame_mutex_;
   JPEGFrame latest_frame_;
   std::uint64_t latest_sequence_ = 0;
-  std::chrono::steady_clock::time_point last_frame_sent_{};
+  std::chrono::steady_clock::time_point last_jpeg_sent_{};
+  std::chrono::steady_clock::time_point last_framebuffer_sent_{};
   std::mutex fatal_mutex_;
   std::atomic<bool> fatal_{false};
   std::string fatal_error_;

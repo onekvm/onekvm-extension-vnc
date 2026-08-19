@@ -11,8 +11,9 @@ Socket 发送键盘和鼠标输入。
 
 ## 功能
 
-- 使用 OneKVM 硬件 MJPEG 帧提供 Tight JPEG 视频
-- VNC 运行时不解码或重新编码视频
+- Tight JPEG 客户端（TigerVNC / noVNC 等）直接转发硬件 MJPEG
+- 其它客户端回退到 RGB 帧缓冲，用 Raw / ZRLE / Hextile，并按 32×32 脏矩形更新
+- Tight JPEG 仍发整帧；脏矩形只作用在回退路径，避免把不支持 JPEG 的客户端踢掉
 - 支持键盘、绝对指针和鼠标扩展按键输入
 - 可配置监听地址、TCP 端口、帧率和 JPEG 质量
 - 支持可选的传统 VNC 密码鉴权
@@ -42,10 +43,10 @@ onekvm-plugin-manager disable vnc
 
 ## 实现说明
 
-C++20 运行时使用 LibVNCServer 中经 OpenBMC 验证的 Tight JPEG 路径，
-直接把 OneKVM 的 MJPEG 帧传给 VNC 客户端，不进行解码或重新编码；客户端
-输入则映射为已鉴权的 OneKVM HID 操作。扩展生命周期钩子独立于 Core 启动
-和停止服务。
+C++20 运行时使用 LibVNCServer。对协商了 Tight JPEG 质量等级的客户端，
+直接转发 OneKVM 的硬件 MJPEG 帧；对其它编码（Raw / ZRLE / Hextile）则
+把 JPEG 解到 RGB565 帧缓冲，只标记变化的 32×32 块再交给 LibVNCServer。
+客户端输入映射为已鉴权的 OneKVM HID 操作。
 
 ## 开发
 

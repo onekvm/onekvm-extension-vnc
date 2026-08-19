@@ -11,6 +11,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(JSON_C REQUIRED IMPORTED_TARGET json-c)
+pkg_check_modules(JPEG REQUIRED IMPORTED_TARGET libjpeg)
 
 set(ONEKVM_LIBVNCSERVER_SOURCE "" CACHE PATH
     "Optional LibVNCServer source tree to build statically")
@@ -55,6 +56,7 @@ endif()
 add_executable(onekvm-protocol-vnc
   src/admin_hid.cpp
   src/config.cpp
+  src/jpeg_rgb.cpp
   src/keymap.cpp
   src/main.cpp
   src/protocol_ipc.cpp
@@ -66,6 +68,7 @@ target_include_directories(onekvm-protocol-vnc PRIVATE
 target_compile_options(onekvm-protocol-vnc PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(onekvm-protocol-vnc PRIVATE
   PkgConfig::JSON_C
+  PkgConfig::JPEG
   ${ONEKVM_VNC_TARGET}
   Threads::Threads
 )
@@ -88,4 +91,8 @@ if(ONEKVM_BUILD_TESTS)
   target_compile_options(keymap-test PRIVATE -Wall -Wextra -Wpedantic)
   target_link_libraries(keymap-test PRIVATE ${ONEKVM_VNC_TARGET})
   add_test(NAME keymap-test COMMAND keymap-test)
+  add_executable(jpeg-tiles-test tests/jpeg_tiles_test.cpp)
+  target_include_directories(jpeg-tiles-test PRIVATE src)
+  target_compile_options(jpeg-tiles-test PRIVATE -Wall -Wextra -Wpedantic)
+  add_test(NAME jpeg-tiles-test COMMAND jpeg-tiles-test)
 endif()

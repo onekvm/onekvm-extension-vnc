@@ -13,8 +13,9 @@ authenticated extension control socket.
 
 ## Features
 
-- Tight JPEG video using OneKVM's hardware MJPEG frames
-- No video decode or re-encode in the VNC runtime
+- Tight JPEG clients (TigerVNC, noVNC, and similar) receive hardware MJPEG frames directly
+- Other clients fall back to the RGB framebuffer with Raw, ZRLE, or Hextile and 32×32 dirty rectangles
+- Tight JPEG is still a full frame; dirty rectangles apply only to the fallback path so clients without JPEG are not dropped
 - Keyboard, absolute pointer, and additional mouse-button input
 - Configurable bind address, TCP port, frame rate, and JPEG quality
 - Optional classic VNC password authentication

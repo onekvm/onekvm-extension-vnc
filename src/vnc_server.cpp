@@ -1,5 +1,6 @@
 #include "vnc_server.hpp"
 
+#include "jpeg_rgb.hpp"
 #include "keymap.hpp"
 
 #include <arpa/inet.h>
@@ -539,7 +540,10 @@ void VNCServer::ClearLatestFrame() {
   std::lock_guard lock(frame_mutex_);
   latest_frame_ = {};
   latest_sequence_ = 0;
-  last_frame_sent_ = {};
+  last_jpeg_sent_ = {};
+  last_framebuffer_sent_ = {};
+  previous_rgb_.clear();
+  decoded_sequence_ = 0;
 }
 
 bool VNCServer::Resize(std::uint16_t width, std::uint16_t height,
@@ -553,6 +557,8 @@ bool VNCServer::Resize(std::uint16_t width, std::uint16_t height,
   input_.Resize(width_, height_);
   rfbNewFramebuffer(server_, framebuffer_.data(), width_, height_, 5, 3,
                     kBytesPerFramebufferPixel);
+  previous_rgb_.clear();
+  decoded_sequence_ = 0;
 
   std::vector<rfbClientPtr> close_clients;
   auto iterator = rfbGetClientIterator(server_);
@@ -579,12 +585,61 @@ bool VNCServer::Resize(std::uint16_t width, std::uint16_t height,
   return true;
 }
 
-bool VNCServer::SendJPEG(rfbClientPtr client, const JPEGFrame &frame,
-                         std::string &error) {
-  if (client->preferredEncoding != rfbEncodingTight) {
-    error = "VNC client did not negotiate Tight encoding";
+bool VNCServer::ClientWantsTightJPEG(rfbClientPtr client) const {
+  if (client == nullptr || client->preferredEncoding != rfbEncodingTight)
+    return false;
+#ifdef LIBVNCSERVER_HAVE_LIBJPEG
+  return client->tightQualityLevel >= 0 || client->turboQualityLevel >= 0;
+#else
+  return client->tightQualityLevel >= 0;
+#endif
+}
+
+bool VNCServer::DecodeLatestFrame(const JPEGFrame &frame, std::string &error) {
+  if (decoded_sequence_ == latest_sequence_ && !previous_rgb_.empty())
+    return true;
+  auto *pixels = reinterpret_cast<std::uint16_t *>(framebuffer_.data());
+  const int count = static_cast<int>(width_) * static_cast<int>(height_);
+  if (previous_rgb_.size() != static_cast<std::size_t>(count))
+    previous_rgb_.assign(static_cast<std::size_t>(count), 0);
+  else
+    previous_rgb_.assign(pixels, pixels + count);
+  if (!DecodeJPEGToRGB565(frame.data, frame.size, pixels, width_, height_,
+                          error))
+    return false;
+  decoded_sequence_ = latest_sequence_;
+  return true;
+}
+
+bool VNCServer::SendFramebuffer(rfbClientPtr client, bool force_update,
+                                std::string &error) {
+  const auto *pixels =
+      reinterpret_cast<const std::uint16_t *>(framebuffer_.data());
+  const auto tiles =
+      force_update || previous_rgb_.empty()
+          ? std::vector<TileRect>{{0, 0, width_, height_}}
+          : CollectDirtyTiles(previous_rgb_.data(), pixels, width_, height_);
+  if (tiles.empty())
+    return true;
+  LOCK(client->updateMutex);
+  for (const auto &tile : tiles) {
+    sraRegionPtr region =
+        sraRgnCreateRect(tile.x, tile.y, tile.x + tile.width,
+                         tile.y + tile.height);
+    sraRgnOr(client->modifiedRegion, region);
+    sraRgnDestroy(region);
+  }
+  UNLOCK(client->updateMutex);
+  if (!rfbSendFramebufferUpdate(client, client->modifiedRegion)) {
+    error = "send VNC framebuffer update";
     return false;
   }
+  ClearClientRegions(client);
+  return true;
+}
+
+bool VNCServer::SendJPEG(rfbClientPtr client, const JPEGFrame &frame,
+                         std::string &error) {
   if (frame.owner == nullptr || frame.data == nullptr || frame.size == 0 ||
       frame.size > static_cast<std::size_t>(INT_MAX)) {
     error = "invalid VNC JPEG frame";
@@ -659,13 +714,14 @@ bool VNCServer::ProcessFrame(std::string &error) {
   }
 
   const auto now = std::chrono::steady_clock::now();
-  const auto interval = std::chrono::microseconds(1000000 / config_.fps);
-  if (config_.fps < 60 &&
-      last_frame_sent_ != std::chrono::steady_clock::time_point{} &&
-      now - last_frame_sent_ < interval)
-    return true;
+  const auto jpeg_interval = std::chrono::microseconds(1000000 / config_.fps);
+  const int framebuffer_fps = std::min(config_.fps, 15);
+  const auto framebuffer_interval =
+      std::chrono::microseconds(1000000 / std::max(framebuffer_fps, 1));
 
-  bool sent = false;
+  bool sent_jpeg = false;
+  bool sent_framebuffer = false;
+  bool decoded = false;
   std::vector<rfbClientPtr> close_clients;
   auto iterator = rfbGetClientIterator(server_);
   rfbClientPtr client;
@@ -674,8 +730,37 @@ bool VNCServer::ProcessFrame(std::string &error) {
     if (data == nullptr || !data->need_update ||
         (!data->force_update && data->last_sequence == sequence))
       continue;
+    const bool tight_jpeg = ClientWantsTightJPEG(client);
+    if (!data->logged_encoding) {
+      std::cerr << "onekvm-protocol-vnc: " << client->host << " using "
+                << (tight_jpeg ? "Tight JPEG" : "Raw/ZRLE framebuffer")
+                << " (preferred=" << client->preferredEncoding << ")\n";
+      data->logged_encoding = true;
+    }
+    if (tight_jpeg) {
+      if (last_jpeg_sent_ != std::chrono::steady_clock::time_point{} &&
+          now - last_jpeg_sent_ < jpeg_interval && !data->force_update)
+        continue;
+    } else {
+      if (last_framebuffer_sent_ != std::chrono::steady_clock::time_point{} &&
+          now - last_framebuffer_sent_ < framebuffer_interval &&
+          !data->force_update)
+        continue;
+      if (!decoded) {
+        std::string decode_error;
+        if (!DecodeLatestFrame(frame, decode_error)) {
+          std::cerr << "onekvm-protocol-vnc: " << decode_error << '\n';
+          close_clients.push_back(client);
+          continue;
+        }
+        decoded = true;
+      }
+    }
     std::string send_error;
-    if (!SendJPEG(client, frame, send_error)) {
+    const bool ok =
+        tight_jpeg ? SendJPEG(client, frame, send_error)
+                   : SendFramebuffer(client, data->force_update, send_error);
+    if (!ok) {
       std::cerr << "onekvm-protocol-vnc: " << send_error << '\n';
       close_clients.push_back(client);
       continue;
@@ -683,21 +768,26 @@ bool VNCServer::ProcessFrame(std::string &error) {
     data->need_update = data->continuous_enabled;
     data->force_update = false;
     data->last_sequence = sequence;
-    sent = true;
+    if (tight_jpeg)
+      sent_jpeg = true;
+    else
+      sent_framebuffer = true;
   }
   rfbReleaseClientIterator(iterator);
   CloseClients(close_clients);
-  if (sent)
-    last_frame_sent_ = now;
+  if (sent_jpeg)
+    last_jpeg_sent_ = now;
+  if (sent_framebuffer)
+    last_framebuffer_sent_ = now;
   return true;
 }
 
-void VNCServer::SuppressDefaultUpdates() {
+void VNCServer::SuppressTightJPEGUpdates() {
   auto iterator = rfbGetClientIterator(server_);
   rfbClientPtr client;
   while ((client = rfbClientIteratorNext(iterator)) != nullptr) {
     auto *data = static_cast<ClientData *>(client->clientData);
-    if (data != nullptr && data->need_update)
+    if (data != nullptr && data->need_update && ClientWantsTightJPEG(client))
       ClearClientRegions(client);
   }
   rfbReleaseClientIterator(iterator);
@@ -709,7 +799,7 @@ bool VNCServer::Run(volatile char &exit_flag, std::string &error) {
     SyncSubscription();
     if (!ProcessFrame(error))
       return false;
-    SuppressDefaultUpdates();
+    SuppressTightJPEGUpdates();
   }
   if (fatal_.load()) {
     std::lock_guard lock(fatal_mutex_);
