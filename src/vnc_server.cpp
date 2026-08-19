@@ -86,6 +86,30 @@ void CloseClients(const std::vector<rfbClientPtr> &clients) {
   }
 }
 
+void ApplyRGB565ServerFormat(rfbScreenInfoPtr server, bool refresh_clients) {
+  if (server == nullptr)
+    return;
+  /* rfbGetScreen(5,3,2) builds RGB555 with R in the low bits. The JPEG
+     fallback packs standard RGB565 (R[15:11] G[10:5] B[4:0]). */
+  auto &format = server->serverFormat;
+  format.bitsPerPixel = 16;
+  format.depth = 16;
+  format.trueColour = TRUE;
+  format.redMax = 31;
+  format.greenMax = 63;
+  format.blueMax = 31;
+  format.redShift = 11;
+  format.greenShift = 5;
+  format.blueShift = 0;
+  if (!refresh_clients)
+    return;
+  auto iterator = rfbGetClientIterator(server);
+  rfbClientPtr client;
+  while ((client = rfbClientIteratorNext(iterator)) != nullptr)
+    server->setTranslateFunction(client);
+  rfbReleaseClientIterator(iterator);
+}
+
 bool AllocateFramebuffer(std::uint16_t width, std::uint16_t height,
                          std::vector<char> &framebuffer, std::string &error) {
   const auto size =
@@ -342,6 +366,7 @@ VNCServer::VNCServer(const Config &config, Identity identity,
   desktop_name_ = DesktopName();
   server_->desktopName = desktop_name_.c_str();
   server_->frameBuffer = framebuffer_.data();
+  ApplyRGB565ServerFormat(server_, false);
   server_->alwaysShared = TRUE;
   server_->permitFileTransfer = FALSE;
   server_->newClientHook = NewClient;
@@ -568,6 +593,7 @@ bool VNCServer::Resize(std::uint16_t width, std::uint16_t height,
   input_.Resize(width_, height_);
   rfbNewFramebuffer(server_, framebuffer_.data(), width_, height_, 5, 3,
                     kBytesPerFramebufferPixel);
+  ApplyRGB565ServerFormat(server_, true);
   previous_rgb_.clear();
   decoded_sequence_ = 0;
 

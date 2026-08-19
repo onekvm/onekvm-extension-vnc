@@ -21,6 +21,7 @@ void JPEGErrorExit(j_common_ptr cinfo) {
 
 std::uint16_t PackRGB565(std::uint8_t red, std::uint8_t green,
                          std::uint8_t blue) {
+  /* Matches VNCServer::ApplyRGB565ServerFormat: R[15:11] G[10:5] B[4:0]. */
   return static_cast<std::uint16_t>(((red >> 3) << 11) | ((green >> 2) << 5) |
                                     (blue >> 3));
 }
