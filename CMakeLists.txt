@@ -11,7 +11,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(JSON_C REQUIRED IMPORTED_TARGET json-c)
-pkg_check_modules(JPEG REQUIRED IMPORTED_TARGET libjpeg)
+# Prefix must not be JPEG: that collides with FindJPEG's JPEG_FOUND /
+# JPEG_LIBRARY cache keys and leaves LibVNCServer's Tight path disabled.
+pkg_check_modules(LIBJPEG REQUIRED IMPORTED_TARGET libjpeg)
 
 set(ONEKVM_LIBVNCSERVER_SOURCE "" CACHE PATH
     "Optional LibVNCServer source tree to build statically")
@@ -39,6 +41,10 @@ if(ONEKVM_LIBVNCSERVER_SOURCE)
   set(WITH_EXAMPLES OFF CACHE BOOL "" FORCE)
   set(WITH_QT OFF CACHE BOOL "" FORCE)
   set(WITH_ZLIB ON CACHE BOOL "" FORCE)
+  # Resolve libjpeg before forcing static suffixes. Yocto's libjpeg-turbo
+  # sysroot often ships only libjpeg.so; LibVNCServer's find_package(JPEG)
+  # would otherwise fail and omit tight.c / rfbSendTightHeader.
+  find_package(JPEG REQUIRED)
   set(ONEKVM_SAVED_FIND_LIBRARY_SUFFIXES ${CMAKE_FIND_LIBRARY_SUFFIXES})
   set(CMAKE_FIND_LIBRARY_SUFFIXES .a)
   add_subdirectory("${ONEKVM_LIBVNCSERVER_SOURCE}"
@@ -68,7 +74,7 @@ target_include_directories(onekvm-protocol-vnc PRIVATE
 target_compile_options(onekvm-protocol-vnc PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(onekvm-protocol-vnc PRIVATE
   PkgConfig::JSON_C
-  PkgConfig::JPEG
+  PkgConfig::LIBJPEG
   ${ONEKVM_VNC_TARGET}
   Threads::Threads
 )
