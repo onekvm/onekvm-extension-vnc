@@ -255,7 +255,7 @@ func (s *Sink) WriteVideo(payload []byte, _ float64) error {
 	return nil
 }
 
-func (*Sink) WriteAudio([]byte, float64) error { return nil }
+func (*Sink) WriteAudio([]byte, float64) error { return nil } // RFB has no audio channel; VNC does not subscribe to shared Opus.
 
 func (*Sink) OnControlMessage(func(av.ControlMsg)) {}
 
