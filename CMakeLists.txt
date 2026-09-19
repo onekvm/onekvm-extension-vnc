@@ -11,6 +11,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(JSON_C REQUIRED IMPORTED_TARGET json-c)
+pkg_check_modules(OPUS REQUIRED IMPORTED_TARGET opus)
 # Prefix must not be JPEG: that collides with FindJPEG's JPEG_FOUND /
 # JPEG_LIBRARY cache keys and leaves LibVNCServer's Tight path disabled.
 pkg_check_modules(LIBJPEG REQUIRED IMPORTED_TARGET libjpeg)
@@ -18,6 +19,13 @@ pkg_check_modules(LIBJPEG REQUIRED IMPORTED_TARGET libjpeg)
 set(ONEKVM_LIBVNCSERVER_SOURCE "" CACHE PATH
     "Optional LibVNCServer source tree to build statically")
 if(ONEKVM_LIBVNCSERVER_SOURCE)
+  # GCC 15 can ICE in LibVNCServer's generated colour-translation tables for
+  # the T-Head C906 target while expanding a vector compare. The target has no
+  # usable standard RVV path here, so keep the bundled C library scalar.
+  add_compile_options(
+    $<$<COMPILE_LANGUAGE:C>:-fno-tree-vectorize>
+    $<$<COMPILE_LANGUAGE:C>:-fno-tree-slp-vectorize>
+  )
   set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
   set(WITH_24BPP OFF CACHE BOOL "" FORCE)
   set(WITH_FFMPEG OFF CACHE BOOL "" FORCE)
@@ -75,6 +83,7 @@ target_compile_options(onekvm-protocol-vnc PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(onekvm-protocol-vnc PRIVATE
   PkgConfig::JSON_C
   PkgConfig::LIBJPEG
+  PkgConfig::OPUS
   ${ONEKVM_VNC_TARGET}
   Threads::Threads
 )

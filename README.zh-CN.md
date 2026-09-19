@@ -3,17 +3,19 @@
 [English](README.md) | 简体中文
 
 使用标准 VNC 客户端访问 OneKVM 所连接的计算机。这个独立进程的协议扩展
-通过 Tight JPEG 路径转发硬件 MJPEG 帧，并通过 OneKVM 已鉴权的扩展控制
-Socket 发送键盘和鼠标输入。
+通过 RFB 原生 JPEG 或 Tight JPEG 转发硬件 MJPEG 帧，并通过 OneKVM 已鉴权的扩展控制
+Socket 发送键盘和鼠标输入。兼容的 Viewer 还能通过标准 QEMU RFB 音频扩展接收
+HDMI 音频。
 
 > **构建说明：** 本仓库只包含扩展源码。正式软件包由 `onekvm-distro` 中的
 > OpenEmbedded（OE）配方统一构建；本仓库不提供独立的正式构建流程。
 
 ## 功能
 
-- Tight JPEG 客户端（TigerVNC / noVNC 等）直接转发硬件 MJPEG
+- 支持 RFB 原生 JPEG（encoding 21）或 Tight JPEG 的客户端直接转发硬件 MJPEG
 - 其它客户端回退到 RGB 帧缓冲，用 Raw / ZRLE / Hextile，并按 32×32 脏矩形更新
-- Tight JPEG 仍发整帧；脏矩形只作用在回退路径，避免把不支持 JPEG 的客户端踢掉
+- 直接 JPEG 仍发整帧；脏矩形只作用在回退路径，避免把不支持 JPEG 的客户端踢掉
+- 支持 QEMU RFB 音频（`-259`），按 Viewer 请求转换 PCM 格式、声道数和采样率
 - 支持键盘、绝对指针和鼠标扩展按键输入
 - 可配置监听地址、TCP 端口、帧率和 JPEG 质量
 - 支持可选的传统 VNC 密码鉴权
@@ -24,8 +26,8 @@ Socket 发送键盘和鼠标输入。
 安装，然后使用插件管理器控制扩展：
 
 ```sh
-onekvm-plugin-manager enable vnc
-onekvm-plugin-manager disable vnc
+onekvm-extension enable vnc
+onekvm-extension disable vnc
 ```
 
 ## 配置与连接
@@ -43,10 +45,12 @@ onekvm-plugin-manager disable vnc
 
 ## 实现说明
 
-C++20 运行时使用 LibVNCServer。服务器不再回包广告 Raw/ZRLE/Ultra 等
-并未实现的编码。协商了 Tight JPEG 质量等级的客户端直接收硬件 MJPEG；
+C++20 运行时使用 LibVNCServer，并补充当前 RFB 注册表定义的原生 JPEG
+encoding 21。协商了原生 JPEG 或 Tight JPEG 的客户端直接收硬件 MJPEG；
 未声明 JPEG 的客户端才回退到 RGB 帧缓冲（Raw / ZRLE / Hextile，32×32
-脏矩形）。客户端输入映射为已鉴权的 OneKVM HID 操作。
+脏矩形）。客户端输入映射为已鉴权的 OneKVM HID 操作。只有 Viewer 声明并启用
+QEMU 音频后才订阅共享 Opus 流，解码一次后按协商参数转换为 PCM；没有声明
+QEMU 音频能力的 Viewer 保持纯视频连接。
 
 ## 开发
 

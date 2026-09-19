@@ -2,6 +2,7 @@
 
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <opus/opus.h>
 #include <poll.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
@@ -102,7 +103,7 @@ struct RingLease {
   }
 };
 
-bool IsCodec(std::uint8_t value) { return value >= 1 && value <= 3; }
+bool IsCodec(std::uint8_t value) { return value >= 1 && value <= 4; }
 
 bool WriteAll(int fd, std::string_view data, std::string &error) {
   while (!data.empty()) {
@@ -185,7 +186,8 @@ std::string SubscriptionJSON(const Identity &identity, std::string_view video,
                              int fps = 0, int jpeg_quality = 0,
                              bool shared_ring = false,
                              std::string_view codec = {},
-                             bool track_session = true) {
+                             bool track_session = true,
+                             std::string_view audio = {}) {
   std::string request =
       "{\"version\":1,\"extension_id\":\"" + identity.extension_id +
       "\",\"token\":\"" + identity.token + "\",\"video\":\"" +
@@ -197,6 +199,8 @@ std::string SubscriptionJSON(const Identity &identity, std::string_view video,
                std::to_string(static_cast<double>(jpeg_quality) / 100.0);
   if (!codec.empty())
     request += ",\"codec\":\"" + std::string(codec) + "\"";
+  if (!audio.empty())
+    request += ",\"audio\":\"" + std::string(audio) + "\"";
   if (shared_ring)
     request += ",\"transport\":\"shm-ring-v1\"";
   if (!track_session)
@@ -625,6 +629,92 @@ void MediaSubscription::Run() {
     if (!stopping_.load())
       std::this_thread::sleep_for(backoff);
   }
+}
+
+AudioSubscription::AudioSubscription(std::string socket_path,
+                                     Identity identity,
+                                     PCMCallback pcm_callback,
+                                     ErrorCallback error_callback)
+    : socket_path_(std::move(socket_path)), identity_(std::move(identity)),
+      pcm_callback_(std::move(pcm_callback)),
+      error_callback_(std::move(error_callback)) {}
+
+AudioSubscription::~AudioSubscription() { Stop(); }
+
+void AudioSubscription::Start() {
+  if (thread_.joinable())
+    return;
+  stopping_.store(false);
+  thread_ = std::thread(&AudioSubscription::Run, this);
+}
+
+void AudioSubscription::Stop() {
+  stopping_.store(true);
+  const int fd = socket_fd_.load();
+  if (fd >= 0)
+    shutdown(fd, SHUT_RDWR);
+  if (thread_.joinable())
+    thread_.join();
+}
+
+void AudioSubscription::Run() {
+  int opus_error = OPUS_OK;
+  OpusDecoder *decoder = opus_decoder_create(48000, 2, &opus_error);
+  if (decoder == nullptr || opus_error != OPUS_OK) {
+    error_callback_(std::string("create Opus decoder: ") +
+                    opus_strerror(opus_error));
+    if (decoder != nullptr)
+      opus_decoder_destroy(decoder);
+    return;
+  }
+
+  auto backoff = std::chrono::milliseconds(100);
+  while (!stopping_.load()) {
+    std::string error;
+    const int fd = ConnectUnix(socket_path_, 3000, error);
+    if (fd < 0) {
+      if (!stopping_.load())
+        std::this_thread::sleep_for(backoff);
+      backoff = std::min(backoff * 2, std::chrono::milliseconds(2000));
+      continue;
+    }
+    socket_fd_.store(fd);
+    if (!WriteAll(fd,
+                  SubscriptionJSON(identity_, "encoded", 0, 0, false, {},
+                                   false, "opus"),
+                  error)) {
+      CloseOwnedSocket(socket_fd_, fd);
+      continue;
+    }
+    opus_decoder_ctl(decoder, OPUS_RESET_STATE);
+    backoff = std::chrono::milliseconds(100);
+    while (!stopping_.load()) {
+      Frame frame{};
+      if (!ReadFrame(fd, frame, error))
+        break;
+      if (frame.codec != Codec::kOpus || frame.width != 0 ||
+          frame.height != 0 || frame.payload->empty())
+        continue;
+      // Opus allows up to 120 ms per packet: 5760 samples per channel at
+      // 48 kHz. The OneKVM encoder normally emits much smaller 20 ms packets.
+      std::vector<std::int16_t> pcm(5760U * 2U);
+      const int samples = opus_decode(
+          decoder, frame.payload->data(),
+          static_cast<opus_int32>(frame.payload->size()), pcm.data(), 5760, 0);
+      if (samples < 0) {
+        error_callback_(std::string("decode Opus audio: ") +
+                        opus_strerror(samples));
+        continue;
+      }
+      pcm.resize(static_cast<std::size_t>(samples) * 2U);
+      if (!pcm.empty())
+        pcm_callback_(std::move(pcm));
+    }
+    CloseOwnedSocket(socket_fd_, fd);
+    if (!stopping_.load())
+      std::this_thread::sleep_for(backoff);
+  }
+  opus_decoder_destroy(decoder);
 }
 
 } // namespace onekvm::vnc

@@ -11,7 +11,12 @@
 
 namespace onekvm::vnc {
 
-enum class Codec : std::uint8_t { kH264 = 1, kH265 = 2, kMJPEG = 3 };
+enum class Codec : std::uint8_t {
+  kH264 = 1,
+  kH265 = 2,
+  kMJPEG = 3,
+  kOpus = 4,
+};
 
 struct Identity {
   std::string extension_id;
@@ -82,6 +87,36 @@ private:
   FrameCallback frame_callback_;
   NotifyCallback notify_callback_;
   FatalCallback fatal_callback_;
+  std::atomic<bool> stopping_{false};
+  std::atomic<int> socket_fd_{-1};
+  std::thread thread_;
+};
+
+// The shared protocol media bus carries Opus. QEMU's standardized RFB audio
+// extension carries PCM, so this subscription decodes the shared stream once
+// at its native 48 kHz stereo format. Per-client rate/format conversion stays
+// in VNCServer where the negotiated RFB settings are available.
+class AudioSubscription {
+public:
+  using PCMCallback = std::function<void(std::vector<std::int16_t>)>;
+  using ErrorCallback = std::function<void(std::string)>;
+
+  AudioSubscription(std::string socket_path, Identity identity,
+                    PCMCallback pcm_callback, ErrorCallback error_callback);
+  ~AudioSubscription();
+  AudioSubscription(const AudioSubscription &) = delete;
+  AudioSubscription &operator=(const AudioSubscription &) = delete;
+
+  void Start();
+  void Stop();
+
+private:
+  void Run();
+
+  std::string socket_path_;
+  Identity identity_;
+  PCMCallback pcm_callback_;
+  ErrorCallback error_callback_;
   std::atomic<bool> stopping_{false};
   std::atomic<int> socket_fd_{-1};
   std::thread thread_;

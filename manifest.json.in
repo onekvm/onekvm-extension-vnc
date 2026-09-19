@@ -4,15 +4,15 @@
   "i18n": {
     "default": {
       "name": "VNC",
-      "description": "Remote framebuffer access with Tight JPEG video plus keyboard, pointer, and extra mouse-button input."
+      "description": "Remote framebuffer access with direct JPEG video, QEMU audio, keyboard, pointer, and extra mouse-button input."
     },
     "zh": {
       "name": "VNC",
-      "description": "通过 Tight JPEG 视频远程访问画面，并支持键盘、指针和鼠标扩展按键输入。"
+      "description": "通过直通 JPEG 视频和 QEMU 音频远程访问，并支持键盘、指针和鼠标扩展按键输入。"
     },
     "zh-TW": {
       "name": "VNC",
-      "description": "透過 Tight JPEG 視訊遠端存取畫面，並支援鍵盤、指標和滑鼠擴充按鍵輸入。"
+      "description": "透過直通 JPEG 視訊和 QEMU 音訊遠端存取，並支援鍵盤、指標和滑鼠擴充按鍵輸入。"
     }
   },
   "version": "@VERSION@",
@@ -23,7 +23,7 @@
   "homepage": "https://github.com/onekvm/onekvm-extension-vnc",
   "entrypoint": "bin/onekvm-protocol-vnc",
   "permissions": ["network"],
-  "capabilities": ["video.mjpeg", "hid"],
+  "capabilities": ["video.mjpeg", "video.encoded", "hid"],
   "services": [{
     "id": "server",
     "i18n": {

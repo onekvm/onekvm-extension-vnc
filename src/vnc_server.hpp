@@ -88,6 +88,14 @@ private:
     bool force_update = false;
     bool continuous_supported = false;
     bool continuous_enabled = false;
+    bool audio_supported = false;
+    bool audio_capability_pending = false;
+    bool audio_enabled = false;
+    bool audio_started = false;
+    std::uint8_t audio_sample_format = 3;
+    std::uint8_t audio_channels = 2;
+    std::uint32_t audio_frequency = 44100;
+    std::uint64_t audio_resample_position = 0;
     bool logged_encoding = false;
     std::uint64_t last_sequence = 0;
     std::unique_ptr<SessionReporter> session_reporter;
@@ -105,22 +113,43 @@ private:
   static rfbBool ContinuousEnablePseudoEncoding(rfbClientPtr client,
                                                 void **data,
                                                 int encoding_number);
+  static rfbBool NativeJPEGNewClient(rfbClientPtr client, void **data);
+  static rfbBool NativeJPEGEnableEncoding(rfbClientPtr client, void **data,
+                                          int encoding_number);
+  static rfbBool AudioNewClient(rfbClientPtr client, void **data);
+  static rfbBool AudioEnableEncoding(rfbClientPtr client, void **data,
+                                     int encoding_number);
+  static rfbBool AudioHandleMessage(rfbClientPtr client, void *data,
+                                    const rfbClientToServerMsg *message);
   static rfbBool ContinuousHandleMessage(
       rfbClientPtr client, void *data,
       const rfbClientToServerMsg *message);
 
   void SetFrame(JPEGFrame frame);
+  void QueueAudio(std::vector<std::int16_t> pcm);
   void SetFatal(std::string error);
   void SyncSubscription();
+  void SyncAudioSubscription();
   bool ProcessFrame(std::string &error);
+  bool ProcessAudio(std::string &error);
+  bool SendAudioCapability(rfbClientPtr client, std::string &error);
+  bool SendAudioControl(rfbClientPtr client, std::uint16_t operation,
+                        std::string &error);
+  bool SendAudioData(rfbClientPtr client, const std::vector<std::uint8_t> &pcm,
+                     std::string &error);
+  static std::vector<std::uint8_t>
+  ConvertAudio(const std::vector<std::int16_t> &source, ClientData &client);
   bool Resize(std::uint16_t width, std::uint16_t height, std::string &error);
   bool SendJPEG(rfbClientPtr client, const JPEGFrame &frame,
                 std::string &error);
+  bool SendNativeJPEG(rfbClientPtr client, const JPEGFrame &frame,
+                      std::string &error);
   bool SendFramebuffer(rfbClientPtr client, bool force_update,
                        std::string &error);
+  bool ClientWantsNativeJPEG(rfbClientPtr client) const;
   bool ClientWantsTightJPEG(rfbClientPtr client) const;
   bool DecodeLatestFrame(const JPEGFrame &frame, std::string &error);
-  void SuppressTightJPEGUpdates();
+  void SuppressDirectJPEGUpdates();
   void ClearLatestFrame();
 
   Config config_;
@@ -135,6 +164,7 @@ private:
   std::array<char *, 2> password_list_{};
   std::string listen6_interface_;
   std::unique_ptr<MediaSubscription> subscription_;
+  std::unique_ptr<AudioSubscription> audio_subscription_;
   unsigned int clients_ = 0;
   std::uint16_t width_ = 0;
   std::uint16_t height_ = 0;
@@ -143,10 +173,16 @@ private:
   std::uint64_t latest_sequence_ = 0;
   std::chrono::steady_clock::time_point last_jpeg_sent_{};
   std::chrono::steady_clock::time_point last_framebuffer_sent_{};
+  std::mutex audio_mutex_;
+  std::deque<std::vector<std::int16_t>> audio_queue_;
   std::mutex fatal_mutex_;
   std::atomic<bool> fatal_{false};
   std::string fatal_error_;
-  bool continuous_extension_registered_ = false;
+  bool protocol_extensions_registered_ = false;
+  static int native_jpeg_encodings_[2];
+  static rfbProtocolExtension native_jpeg_extension_;
+  static int audio_encodings_[2];
+  static rfbProtocolExtension audio_extension_;
   static int continuous_encodings_[2];
   static rfbProtocolExtension continuous_extension_;
 };

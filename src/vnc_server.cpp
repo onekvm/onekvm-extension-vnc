@@ -16,6 +16,7 @@ extern "C" {
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
 
@@ -30,6 +31,22 @@ constexpr std::size_t kMaxFramebufferBytes = 64U << 20;
 // calls per second.  Button transitions and wheel events still flush
 // immediately below.
 constexpr auto kPointerFlushInterval = std::chrono::milliseconds(33);
+// The current RFB protocol registry assigns encoding 21 to a complete JPEG
+// image. The LibVNCServer revision used by the appliance predates that
+// assignment, so an application extension claims it and forwards MMF's JPEG
+// verbatim.
+constexpr int kNativeJPEGEncoding = 21;
+constexpr int kQEMUAudioEncoding = -259;
+constexpr std::uint8_t kQEMUMessage = 255;
+constexpr std::uint8_t kQEMUAudioSubmessage = 1;
+constexpr std::uint16_t kQEMUAudioEnable = 0;
+constexpr std::uint16_t kQEMUAudioDisable = 1;
+constexpr std::uint16_t kQEMUAudioSetFormat = 2;
+constexpr std::uint16_t kQEMUAudioEnd = 0;
+constexpr std::uint16_t kQEMUAudioBegin = 1;
+constexpr std::uint16_t kQEMUAudioData = 2;
+constexpr std::uint32_t kOpusSampleRate = 48000;
+constexpr std::size_t kMaxQueuedAudioFrames = 12;
 constexpr int kContinuousUpdatesEncoding = -313;
 constexpr std::uint8_t kEnableContinuousUpdatesMessage = 150;
 
@@ -69,6 +86,61 @@ void ClearClientRegions(rfbClientPtr client) {
   sraRgnMakeEmpty(client->copyRegion);
   client->startDeferring.tv_usec = 0;
   UNLOCK(client->updateMutex);
+}
+
+std::uint16_t ReadBE16(const std::uint8_t *data) {
+  return static_cast<std::uint16_t>((data[0] << 8U) | data[1]);
+}
+
+std::uint32_t ReadBE32(const std::uint8_t *data) {
+  return (static_cast<std::uint32_t>(data[0]) << 24U) |
+         (static_cast<std::uint32_t>(data[1]) << 16U) |
+         (static_cast<std::uint32_t>(data[2]) << 8U) | data[3];
+}
+
+void AppendLE16(std::vector<std::uint8_t> &output, std::uint16_t value) {
+  output.push_back(static_cast<std::uint8_t>(value));
+  output.push_back(static_cast<std::uint8_t>(value >> 8U));
+}
+
+void AppendLE32(std::vector<std::uint8_t> &output, std::uint32_t value) {
+  output.push_back(static_cast<std::uint8_t>(value));
+  output.push_back(static_cast<std::uint8_t>(value >> 8U));
+  output.push_back(static_cast<std::uint8_t>(value >> 16U));
+  output.push_back(static_cast<std::uint8_t>(value >> 24U));
+}
+
+void AppendAudioSample(std::vector<std::uint8_t> &output,
+                       std::int16_t sample, std::uint8_t format) {
+  switch (format) {
+  case 0:
+    output.push_back(static_cast<std::uint8_t>(
+        (static_cast<std::int32_t>(sample) + 32768) >> 8U));
+    break;
+  case 1:
+    output.push_back(static_cast<std::uint8_t>(
+        static_cast<std::int8_t>(sample >> 8U)));
+    break;
+  case 2:
+    AppendLE16(output, static_cast<std::uint16_t>(
+                           static_cast<std::int32_t>(sample) + 32768));
+    break;
+  case 3:
+    AppendLE16(output, static_cast<std::uint16_t>(sample));
+    break;
+  case 4: {
+    const auto value = static_cast<std::uint32_t>(
+        static_cast<std::int32_t>(sample) + 32768);
+    AppendLE32(output, (value << 16U) | value);
+    break;
+  }
+  case 5:
+    AppendLE32(output, static_cast<std::uint32_t>(
+                           static_cast<std::int32_t>(sample) * 65536));
+    break;
+  default:
+    break;
+  }
 }
 
 // LibVNCServer owns the client list iterator. Closing a client while that
@@ -333,6 +405,34 @@ std::pair<std::uint64_t, std::uint64_t> InputState::TakePointerStats() {
 
 int VNCServer::continuous_encodings_[2] = {kContinuousUpdatesEncoding, 0};
 
+int VNCServer::native_jpeg_encodings_[2] = {kNativeJPEGEncoding, 0};
+
+rfbProtocolExtension VNCServer::native_jpeg_extension_ = {
+    NativeJPEGNewClient,
+    nullptr,
+    native_jpeg_encodings_,
+    NativeJPEGEnableEncoding,
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
+};
+
+int VNCServer::audio_encodings_[2] = {kQEMUAudioEncoding, 0};
+
+rfbProtocolExtension VNCServer::audio_extension_ = {
+    AudioNewClient,
+    nullptr,
+    audio_encodings_,
+    AudioEnableEncoding,
+    AudioHandleMessage,
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
+};
+
 rfbProtocolExtension VNCServer::continuous_extension_ = {
     ContinuousNewClient,
     nullptr,
@@ -404,8 +504,10 @@ VNCServer::VNCServer(const Config &config, Identity identity,
   }
 
   input_.Resize(width_, height_);
+  rfbRegisterProtocolExtension(&native_jpeg_extension_);
+  rfbRegisterProtocolExtension(&audio_extension_);
   rfbRegisterProtocolExtension(&continuous_extension_);
-  continuous_extension_registered_ = true;
+  protocol_extensions_registered_ = true;
   rfbInitServer(server_);
   const bool ipv4_ready =
       server_->port < 0 || server_->listenSock != RFB_INVALID_SOCKET;
@@ -418,19 +520,26 @@ VNCServer::VNCServer(const Config &config, Identity identity,
     rfbScreenCleanup(server_);
     server_ = nullptr;
     rfbUnregisterProtocolExtension(&continuous_extension_);
-    continuous_extension_registered_ = false;
+    rfbUnregisterProtocolExtension(&audio_extension_);
+    rfbUnregisterProtocolExtension(&native_jpeg_extension_);
+    protocol_extensions_registered_ = false;
   }
 }
 
 VNCServer::~VNCServer() {
   if (subscription_ != nullptr)
     subscription_->Stop();
+  if (audio_subscription_ != nullptr)
+    audio_subscription_->Stop();
   if (server_ != nullptr) {
     rfbShutdownServer(server_, TRUE);
     rfbScreenCleanup(server_);
   }
-  if (continuous_extension_registered_)
+  if (protocol_extensions_registered_) {
     rfbUnregisterProtocolExtension(&continuous_extension_);
+    rfbUnregisterProtocolExtension(&audio_extension_);
+    rfbUnregisterProtocolExtension(&native_jpeg_extension_);
+  }
 }
 
 enum rfbNewClientAction VNCServer::NewClient(rfbClientPtr client) {
@@ -509,6 +618,129 @@ rfbBool VNCServer::ContinuousNewClient(rfbClientPtr, void **data) {
   return TRUE;
 }
 
+rfbBool VNCServer::NativeJPEGNewClient(rfbClientPtr, void **data) {
+  *data = nullptr;
+  return TRUE;
+}
+
+rfbBool VNCServer::NativeJPEGEnableEncoding(rfbClientPtr client, void **,
+                                            int encoding_number) {
+  if (encoding_number != kNativeJPEGEncoding)
+    return FALSE;
+  // The older LibVNCServer processes application encodings after its built-in
+  // choices and can otherwise leave ZRLE selected even when the viewer puts
+  // JPEG first. Seeing encoding 21 is an explicit opt-in, so make it win over
+  // software framebuffer encodings regardless of that implementation detail.
+  client->preferredEncoding = kNativeJPEGEncoding;
+  return TRUE;
+}
+
+rfbBool VNCServer::AudioNewClient(rfbClientPtr, void **data) {
+  *data = nullptr;
+  return TRUE;
+}
+
+rfbBool VNCServer::AudioEnableEncoding(rfbClientPtr client, void **,
+                                       int encoding_number) {
+  if (encoding_number != kQEMUAudioEncoding)
+    return FALSE;
+  auto *data = static_cast<ClientData *>(client->clientData);
+  if (data == nullptr)
+    return FALSE;
+  data->audio_supported = true;
+  data->audio_capability_pending = true;
+  rfbLog("Enabling QEMU audio protocol extension for client %s\n",
+         client->host);
+  return TRUE;
+}
+
+rfbBool VNCServer::AudioHandleMessage(
+    rfbClientPtr client, void *, const rfbClientToServerMsg *message) {
+  if (message->type != kQEMUMessage)
+    return FALSE;
+  std::uint8_t subtype = 0;
+  const auto peeked = recv(client->sock, &subtype, 1, MSG_PEEK);
+  if (peeked <= 0) {
+    rfbCloseClient(client);
+    return TRUE;
+  }
+  // Message type 255 also carries the QEMU extended-key submessage. Leave it
+  // untouched for another protocol extension when it is not audio.
+  if (subtype != kQEMUAudioSubmessage)
+    return FALSE;
+
+  std::array<std::uint8_t, 3> header{};
+  if (rfbReadExact(client, reinterpret_cast<char *>(header.data()),
+                   static_cast<int>(header.size())) <= 0) {
+    rfbCloseClient(client);
+    return TRUE;
+  }
+  auto *data = static_cast<ClientData *>(client->clientData);
+  if (data == nullptr || !data->audio_supported) {
+    rfbCloseClient(client);
+    return TRUE;
+  }
+  const auto operation = ReadBE16(header.data() + 1);
+  auto *server = static_cast<VNCServer *>(client->screen->screenData);
+  if (operation == kQEMUAudioEnable) {
+    data->audio_enabled = true;
+    data->audio_resample_position = 0;
+    rfbLog("QEMU audio enabled for client %s\n", client->host);
+    return TRUE;
+  }
+  if (operation == kQEMUAudioDisable) {
+    if (data->audio_started) {
+      std::string error;
+      if (!server->SendAudioControl(client, kQEMUAudioEnd, error)) {
+        std::cerr << "onekvm-protocol-vnc: " << error << '\n';
+        rfbCloseClient(client);
+      }
+    }
+    data->audio_enabled = false;
+    data->audio_started = false;
+    data->audio_resample_position = 0;
+    rfbLog("QEMU audio disabled for client %s\n", client->host);
+    return TRUE;
+  }
+  if (operation == kQEMUAudioSetFormat) {
+    std::array<std::uint8_t, 6> format{};
+    if (rfbReadExact(client, reinterpret_cast<char *>(format.data()),
+                     static_cast<int>(format.size())) <= 0) {
+      rfbCloseClient(client);
+      return TRUE;
+    }
+    const auto sample_format = format[0];
+    const auto channels = format[1];
+    const auto frequency = ReadBE32(format.data() + 2);
+    if (sample_format > 5 || (channels != 1 && channels != 2) ||
+        frequency == 0 || frequency > kOpusSampleRate) {
+      rfbLog("Invalid QEMU audio format from client %s\n", client->host);
+      rfbCloseClient(client);
+      return TRUE;
+    }
+    if (data->audio_started) {
+      std::string error;
+      if (!server->SendAudioControl(client, kQEMUAudioEnd, error)) {
+        std::cerr << "onekvm-protocol-vnc: " << error << '\n';
+        rfbCloseClient(client);
+        return TRUE;
+      }
+      data->audio_started = false;
+    }
+    data->audio_sample_format = sample_format;
+    data->audio_channels = channels;
+    data->audio_frequency = frequency;
+    data->audio_resample_position = 0;
+    rfbLog("QEMU audio format %u channels=%u rate=%u for client %s\n",
+           sample_format, channels, frequency, client->host);
+    return TRUE;
+  }
+  rfbLog("Invalid QEMU audio operation %u from client %s\n", operation,
+         client->host);
+  rfbCloseClient(client);
+  return TRUE;
+}
+
 rfbBool VNCServer::ContinuousEnablePseudoEncoding(rfbClientPtr client,
                                                   void **,
                                                   int encoding_number) {
@@ -550,6 +782,15 @@ void VNCServer::SetFrame(JPEGFrame frame) {
   ++latest_sequence_;
 }
 
+void VNCServer::QueueAudio(std::vector<std::int16_t> pcm) {
+  if (pcm.empty())
+    return;
+  std::lock_guard lock(audio_mutex_);
+  while (audio_queue_.size() >= kMaxQueuedAudioFrames)
+    audio_queue_.pop_front();
+  audio_queue_.push_back(std::move(pcm));
+}
+
 void VNCServer::SetFatal(std::string error) {
   {
     std::lock_guard lock(fatal_mutex_);
@@ -570,6 +811,194 @@ void VNCServer::SyncSubscription() {
     subscription_.reset();
     ClearLatestFrame();
   }
+}
+
+void VNCServer::SyncAudioSubscription() {
+  bool wanted = false;
+  auto iterator = rfbGetClientIterator(server_);
+  rfbClientPtr client;
+  while ((client = rfbClientIteratorNext(iterator)) != nullptr) {
+    auto *data = static_cast<ClientData *>(client->clientData);
+    if (data != nullptr && data->audio_enabled) {
+      wanted = true;
+      break;
+    }
+  }
+  rfbReleaseClientIterator(iterator);
+
+  if (wanted && audio_subscription_ == nullptr) {
+    audio_subscription_ = std::make_unique<AudioSubscription>(
+        config_.media_socket, identity_,
+        [this](std::vector<std::int16_t> pcm) {
+          QueueAudio(std::move(pcm));
+        },
+        [](std::string error) {
+          std::cerr << "onekvm-protocol-vnc: " << error << '\n';
+        });
+    audio_subscription_->Start();
+  } else if (!wanted && audio_subscription_ != nullptr) {
+    audio_subscription_->Stop();
+    audio_subscription_.reset();
+    std::lock_guard lock(audio_mutex_);
+    audio_queue_.clear();
+  }
+}
+
+bool VNCServer::SendAudioCapability(rfbClientPtr client, std::string &error) {
+  rfbFramebufferUpdateMsg update{};
+  update.type = rfbFramebufferUpdate;
+  update.nRects = Swap16IfLE(1);
+  rfbFramebufferUpdateRectHeader rectangle{};
+  rectangle.r.x = 0;
+  rectangle.r.y = 0;
+  rectangle.r.w = Swap16IfLE(width_);
+  rectangle.r.h = Swap16IfLE(height_);
+  rectangle.encoding = Swap32IfLE(kQEMUAudioEncoding);
+  std::array<std::uint8_t, sizeof(update) + sizeof(rectangle)> message{};
+  std::memcpy(message.data(), &update, sizeof(update));
+  std::memcpy(message.data() + sizeof(update), &rectangle, sizeof(rectangle));
+  if (rfbWriteExact(client, reinterpret_cast<const char *>(message.data()),
+                    static_cast<int>(message.size())) < 0) {
+    error = "send QEMU audio capability";
+    return false;
+  }
+  return true;
+}
+
+bool VNCServer::SendAudioControl(rfbClientPtr client, std::uint16_t operation,
+                                 std::string &error) {
+  const std::array<std::uint8_t, 4> message{
+      kQEMUMessage, kQEMUAudioSubmessage,
+      static_cast<std::uint8_t>(operation >> 8U),
+      static_cast<std::uint8_t>(operation)};
+  if (rfbWriteExact(client, reinterpret_cast<const char *>(message.data()),
+                    static_cast<int>(message.size())) < 0) {
+    error = "send QEMU audio control";
+    return false;
+  }
+  return true;
+}
+
+bool VNCServer::SendAudioData(rfbClientPtr client,
+                              const std::vector<std::uint8_t> &pcm,
+                              std::string &error) {
+  if (pcm.empty())
+    return true;
+  if (pcm.size() > static_cast<std::size_t>(INT_MAX) - 8U) {
+    error = "QEMU audio packet is too large";
+    return false;
+  }
+  std::vector<std::uint8_t> message;
+  message.reserve(8U + pcm.size());
+  message.push_back(kQEMUMessage);
+  message.push_back(kQEMUAudioSubmessage);
+  message.push_back(static_cast<std::uint8_t>(kQEMUAudioData >> 8U));
+  message.push_back(static_cast<std::uint8_t>(kQEMUAudioData));
+  const auto size = static_cast<std::uint32_t>(pcm.size());
+  message.push_back(static_cast<std::uint8_t>(size >> 24U));
+  message.push_back(static_cast<std::uint8_t>(size >> 16U));
+  message.push_back(static_cast<std::uint8_t>(size >> 8U));
+  message.push_back(static_cast<std::uint8_t>(size));
+  message.insert(message.end(), pcm.begin(), pcm.end());
+  if (rfbWriteExact(client, reinterpret_cast<const char *>(message.data()),
+                    static_cast<int>(message.size())) < 0) {
+    error = "send QEMU audio data";
+    return false;
+  }
+  return true;
+}
+
+std::vector<std::uint8_t>
+VNCServer::ConvertAudio(const std::vector<std::int16_t> &source,
+                        ClientData &client) {
+  const auto source_frames = source.size() / 2U;
+  if (source_frames == 0 || client.audio_frequency == 0 ||
+      client.audio_frequency > kOpusSampleRate ||
+      (client.audio_channels != 1 && client.audio_channels != 2) ||
+      client.audio_sample_format > 5)
+    return {};
+
+  const auto bytes_per_sample =
+      static_cast<std::size_t>(1U << (client.audio_sample_format / 2U));
+  const auto estimated_frames =
+      (source_frames * client.audio_frequency + kOpusSampleRate - 1U) /
+      kOpusSampleRate;
+  std::vector<std::uint8_t> output;
+  output.reserve(estimated_frames * client.audio_channels * bytes_per_sample);
+  const std::uint64_t limit =
+      static_cast<std::uint64_t>(source_frames) * client.audio_frequency;
+  auto position = client.audio_resample_position;
+  while (position < limit) {
+    const auto index = static_cast<std::size_t>(position / client.audio_frequency);
+    const auto fraction = position % client.audio_frequency;
+    const auto next = std::min(index + 1U, source_frames - 1U);
+    auto interpolate = [&](std::size_t channel) {
+      const auto first = static_cast<std::int64_t>(source[index * 2U + channel]);
+      const auto second = static_cast<std::int64_t>(source[next * 2U + channel]);
+      return static_cast<std::int16_t>(
+          (first * static_cast<std::int64_t>(client.audio_frequency - fraction) +
+           second * static_cast<std::int64_t>(fraction)) /
+          static_cast<std::int64_t>(client.audio_frequency));
+    };
+    const auto left = interpolate(0);
+    const auto right = interpolate(1);
+    if (client.audio_channels == 1) {
+      const auto mono = static_cast<std::int16_t>(
+          (static_cast<std::int32_t>(left) + right) / 2);
+      AppendAudioSample(output, mono, client.audio_sample_format);
+    } else {
+      AppendAudioSample(output, left, client.audio_sample_format);
+      AppendAudioSample(output, right, client.audio_sample_format);
+    }
+    position += kOpusSampleRate;
+  }
+  client.audio_resample_position = position - limit;
+  return output;
+}
+
+bool VNCServer::ProcessAudio(std::string &error) {
+  std::deque<std::vector<std::int16_t>> queued;
+  {
+    std::lock_guard lock(audio_mutex_);
+    queued.swap(audio_queue_);
+  }
+  std::vector<rfbClientPtr> close_clients;
+  auto iterator = rfbGetClientIterator(server_);
+  rfbClientPtr client;
+  while ((client = rfbClientIteratorNext(iterator)) != nullptr) {
+    auto *data = static_cast<ClientData *>(client->clientData);
+    if (data == nullptr)
+      continue;
+    if (data->audio_capability_pending) {
+      if (!SendAudioCapability(client, error)) {
+        close_clients.push_back(client);
+        continue;
+      }
+      data->audio_capability_pending = false;
+    }
+    if (!data->audio_enabled || queued.empty())
+      continue;
+    if (!data->audio_started) {
+      if (!SendAudioControl(client, kQEMUAudioBegin, error)) {
+        close_clients.push_back(client);
+        continue;
+      }
+      data->audio_started = true;
+    }
+    for (const auto &source : queued) {
+      auto pcm = ConvertAudio(source, *data);
+      if (!SendAudioData(client, pcm, error)) {
+        close_clients.push_back(client);
+        break;
+      }
+    }
+  }
+  rfbReleaseClientIterator(iterator);
+  CloseClients(close_clients);
+  // A failed client is isolated; it must not terminate the VNC service or
+  // interrupt video for other clients.
+  error.clear();
+  return true;
 }
 
 void VNCServer::ClearLatestFrame() {
@@ -633,6 +1062,11 @@ bool VNCServer::ClientWantsTightJPEG(rfbClientPtr client) const {
 #else
   return client->tightQualityLevel >= 0;
 #endif
+}
+
+bool VNCServer::ClientWantsNativeJPEG(rfbClientPtr client) const {
+  return client != nullptr &&
+         client->preferredEncoding == kNativeJPEGEncoding;
 }
 
 bool VNCServer::DecodeLatestFrame(const JPEGFrame &frame, std::string &error) {
@@ -736,6 +1170,51 @@ bool VNCServer::SendJPEG(rfbClientPtr client, const JPEGFrame &frame,
   return true;
 }
 
+bool VNCServer::SendNativeJPEG(rfbClientPtr client, const JPEGFrame &frame,
+                               std::string &error) {
+  if (frame.owner == nullptr || frame.data == nullptr || frame.size < 4 ||
+      frame.size > static_cast<std::size_t>(INT_MAX) ||
+      frame.data[0] != 0xff || frame.data[1] != 0xd8 ||
+      frame.data[frame.size - 2] != 0xff ||
+      frame.data[frame.size - 1] != 0xd9) {
+    error = "invalid native VNC JPEG frame";
+    return false;
+  }
+
+  rfbFramebufferUpdateMsg update{};
+  update.type = rfbFramebufferUpdate;
+  update.nRects = Swap16IfLE(1);
+  rfbFramebufferUpdateRectHeader rectangle{};
+  rectangle.r.x = Swap16IfLE(0);
+  rectangle.r.y = Swap16IfLE(0);
+  rectangle.r.w = Swap16IfLE(frame.width);
+  rectangle.r.h = Swap16IfLE(frame.height);
+  rectangle.encoding = Swap32IfLE(kNativeJPEGEncoding);
+
+  client->ublen = 0;
+  std::memcpy(client->updateBuf + client->ublen, &update, sizeof(update));
+  client->ublen += sizeof(update);
+  std::memcpy(client->updateBuf + client->ublen, &rectangle,
+              sizeof(rectangle));
+  client->ublen += sizeof(rectangle);
+  const auto payload_size = static_cast<int>(frame.size);
+  if (!rfbSendUpdateBuf(client) ||
+      rfbWriteExact(client, reinterpret_cast<const char *>(frame.data),
+                    payload_size) < 0) {
+    error = "send native VNC JPEG frame";
+    return false;
+  }
+  const int raw_size = static_cast<int>(frame.width) * frame.height *
+                           std::max(client->format.bitsPerPixel / 8, 1) +
+                       sz_rfbFramebufferUpdateRectHeader;
+  rfbStatRecordEncodingSent(client, kNativeJPEGEncoding,
+                            sz_rfbFramebufferUpdateRectHeader +
+                                payload_size,
+                            raw_size);
+  ClearClientRegions(client);
+  return true;
+}
+
 bool VNCServer::ProcessFrame(std::string &error) {
   JPEGFrame frame;
   std::uint64_t sequence = 0;
@@ -770,14 +1249,19 @@ bool VNCServer::ProcessFrame(std::string &error) {
     if (data == nullptr || !data->need_update ||
         (!data->force_update && data->last_sequence == sequence))
       continue;
-    const bool tight_jpeg = ClientWantsTightJPEG(client);
+    const bool native_jpeg = ClientWantsNativeJPEG(client);
+    const bool tight_jpeg = !native_jpeg && ClientWantsTightJPEG(client);
+    const bool direct_jpeg = native_jpeg || tight_jpeg;
     if (!data->logged_encoding) {
       std::cerr << "onekvm-protocol-vnc: " << client->host << " using "
-                << (tight_jpeg ? "Tight JPEG" : "Raw/ZRLE framebuffer")
+                << (native_jpeg
+                        ? "native JPEG"
+                        : (tight_jpeg ? "Tight JPEG"
+                                      : "Raw/ZRLE framebuffer"))
                 << " (preferred=" << client->preferredEncoding << ")\n";
       data->logged_encoding = true;
     }
-    if (tight_jpeg) {
+    if (direct_jpeg) {
       if (last_jpeg_sent_ != std::chrono::steady_clock::time_point{} &&
           now - last_jpeg_sent_ < jpeg_interval && !data->force_update)
         continue;
@@ -797,9 +1281,12 @@ bool VNCServer::ProcessFrame(std::string &error) {
       }
     }
     std::string send_error;
-    const bool ok =
-        tight_jpeg ? SendJPEG(client, frame, send_error)
-                   : SendFramebuffer(client, data->force_update, send_error);
+    const bool ok = native_jpeg
+                        ? SendNativeJPEG(client, frame, send_error)
+                        : (tight_jpeg
+                               ? SendJPEG(client, frame, send_error)
+                               : SendFramebuffer(client, data->force_update,
+                                                 send_error));
     if (!ok) {
       std::cerr << "onekvm-protocol-vnc: " << send_error << '\n';
       close_clients.push_back(client);
@@ -808,7 +1295,7 @@ bool VNCServer::ProcessFrame(std::string &error) {
     data->need_update = data->continuous_enabled;
     data->force_update = false;
     data->last_sequence = sequence;
-    if (tight_jpeg)
+    if (direct_jpeg)
       sent_jpeg = true;
     else
       sent_framebuffer = true;
@@ -822,12 +1309,13 @@ bool VNCServer::ProcessFrame(std::string &error) {
   return true;
 }
 
-void VNCServer::SuppressTightJPEGUpdates() {
+void VNCServer::SuppressDirectJPEGUpdates() {
   auto iterator = rfbGetClientIterator(server_);
   rfbClientPtr client;
   while ((client = rfbClientIteratorNext(iterator)) != nullptr) {
     auto *data = static_cast<ClientData *>(client->clientData);
-    if (data != nullptr && data->need_update && ClientWantsTightJPEG(client))
+    if (data != nullptr && data->need_update &&
+        (ClientWantsNativeJPEG(client) || ClientWantsTightJPEG(client)))
       ClearClientRegions(client);
   }
   rfbReleaseClientIterator(iterator);
@@ -837,9 +1325,12 @@ bool VNCServer::Run(volatile char &exit_flag, std::string &error) {
   while (exit_flag == 0 && !fatal_.load()) {
     rfbProcessEvents(server_, clients_ > 0 ? 1000 : 20000);
     SyncSubscription();
+    SyncAudioSubscription();
+    if (!ProcessAudio(error))
+      return false;
     if (!ProcessFrame(error))
       return false;
-    SuppressTightJPEGUpdates();
+    SuppressDirectJPEGUpdates();
   }
   if (fatal_.load()) {
     std::lock_guard lock(fatal_mutex_);

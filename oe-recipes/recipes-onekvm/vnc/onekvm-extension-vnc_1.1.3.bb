@@ -22,7 +22,7 @@ S = "${UNPACKDIR}/extension"
 
 inherit cmake pkgconfig onekvm-extension
 
-DEPENDS = "json-c jpeg zlib"
+DEPENDS = "json-c jpeg libopus zlib"
 CFLAGS:append = " -ffile-prefix-map=${UNPACKDIR}=/usr/src/debug/${PN}/${PV}"
 CXXFLAGS:append = " -ffile-prefix-map=${UNPACKDIR}=/usr/src/debug/${PN}/${PV}"
 

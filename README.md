@@ -3,9 +3,10 @@
 English | [简体中文](README.zh-CN.md)
 
 Access the computer connected to OneKVM with a standard VNC client. This
-out-of-process protocol extension forwards hardware MJPEG frames through the
-Tight JPEG path and sends keyboard and pointer input through OneKVM's
-authenticated extension control socket.
+out-of-process protocol extension forwards hardware MJPEG frames through native
+RFB JPEG or Tight JPEG and sends keyboard and pointer input through OneKVM's
+authenticated extension control socket. Compatible viewers can also receive
+HDMI audio through the standardized QEMU RFB audio extension.
 
 > **Build note:** This repository contains extension sources only. Release
 > packages are built by the OpenEmbedded recipes in `onekvm-distro`; this
@@ -13,9 +14,10 @@ authenticated extension control socket.
 
 ## Features
 
-- Tight JPEG clients (TigerVNC, noVNC, and similar) receive hardware MJPEG frames directly
+- Native RFB JPEG (encoding 21) and Tight JPEG clients receive hardware MJPEG frames directly
 - Other clients fall back to the RGB framebuffer with Raw, ZRLE, or Hextile and 32×32 dirty rectangles
-- Tight JPEG is still a full frame; dirty rectangles apply only to the fallback path so clients without JPEG are not dropped
+- Direct JPEG is still a full frame; dirty rectangles apply only to the fallback path so clients without JPEG are not dropped
+- QEMU RFB audio (`-259`) with the viewer's requested PCM format, channel count, and sample rate
 - Keyboard, absolute pointer, and additional mouse-button input
 - Configurable bind address, TCP port, frame rate, and JPEG quality
 - Optional classic VNC password authentication
@@ -26,8 +28,8 @@ The package name is `onekvm-extension-vnc`. Install it through your OneKVM
 distribution package or image, then manage it with the plugin manager:
 
 ```sh
-onekvm-plugin-manager enable vnc
-onekvm-plugin-manager disable vnc
+onekvm-extension enable vnc
+onekvm-extension disable vnc
 ```
 
 ## Configure and connect
@@ -46,9 +48,13 @@ service only on a trusted network or through a VPN.
 
 ## How it works
 
-The C++20 runtime uses LibVNCServer's OpenBMC-proven Tight JPEG path. It passes
-OneKVM's MJPEG frames to VNC clients without decoding or re-encoding them, then
-maps client input to authenticated OneKVM HID operations. Extension lifecycle
+The C++20 runtime uses LibVNCServer's OpenBMC-proven Tight JPEG path and adds
+the current RFB registry's native JPEG encoding (21). It passes OneKVM's MJPEG
+frames to JPEG-capable VNC clients without decoding or re-encoding them, then
+maps client input to authenticated OneKVM HID operations. Audio is subscribed
+only after a compatible viewer enables it; the shared Opus stream is decoded
+once and converted to the viewer's negotiated PCM format. Viewers that do not
+advertise the QEMU audio pseudo-encoding remain video-only. Extension lifecycle
 hooks start and stop the server independently of Core.
 
 ## Development
