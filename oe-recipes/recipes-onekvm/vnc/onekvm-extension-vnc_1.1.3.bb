@@ -11,9 +11,10 @@ PR = "r3"
 
 ONEKVM_COMPONENT_GIT_URI ??= "git://github.com/onekvm/onekvm-extension-vnc.git;protocol=https;branch=main"
 ONEKVM_COMPONENT_SRCREV ??= ""
+ONEKVM_LIBVNCSERVER_URI = "git://github.com/LibVNC/libvncserver;protocol=https;branch=master;name=libvncserver;destsuffix=libvncserver"
 SRC_URI = "\
     ${ONEKVM_COMPONENT_GIT_URI};name=extension;destsuffix=extension \
-    git://github.com/LibVNC/libvncserver;protocol=https;branch=master;name=libvncserver;destsuffix=libvncserver \
+    ${ONEKVM_LIBVNCSERVER_URI} \
 "
 SRCREV_extension = "${ONEKVM_COMPONENT_SRCREV}"
 SRCREV_libvncserver = "9b54b1ec32731bd23158ca014dc18014db4194c3"
@@ -21,6 +22,15 @@ SRCREV_FORMAT = "extension_libvncserver"
 S = "${UNPACKDIR}/extension"
 
 inherit cmake pkgconfig onekvm-extension
+
+# `externalsrc` supplies only the extension tree. Keep fetch/unpack available
+# for the independently pinned LibVNCServer source and restore that URI after
+# externalsrc removes remote entries from SRC_URI.
+SRCTREECOVEREDTASKS = "do_patch"
+python () {
+    if d.getVar("EXTERNALSRC"):
+        d.setVar("SRC_URI", d.getVar("ONEKVM_LIBVNCSERVER_URI"))
+}
 
 DEPENDS = "json-c jpeg libopus zlib"
 CFLAGS:append = " -ffile-prefix-map=${UNPACKDIR}=/usr/src/debug/${PN}/${PV}"
@@ -30,13 +40,12 @@ ONEKVM_EXTENSION_ID = "vnc"
 ONEKVM_EXTENSION_API_VERSION = "2"
 ONEKVM_EXTENSION_MANIFEST_TEMPLATE = "${S}/manifest.json.in"
 RDEPENDS:${PN} += "onekvm-core (>= 0.1.0-r1)"
-# jpeg_rgb plus LibVNCServer Tight need libjpeg. The Cube rootfs does not
-# ship it, and plugin-manager rejects a libjpeg62 Depends. Bundle the
-# shared library inside the extension payload instead.
-PRIVATE_LIBS:${PN} = "libjpeg.so.62"
-# Keep the bundled jpeg out of a directory named lib, otherwise package.bbclass
+# The extension host does not accept libjpeg/libopus package dependencies.
+# Bundle these shared libraries inside the extension payload.
+PRIVATE_LIBS:${PN} = "libjpeg.so.62 libopus.so.0"
+# Keep bundled libraries out of a directory named lib, otherwise package.bbclass
 # adds an ldconfig postinst and plugin-manager rejects the IPK.
-OECMAKE_RPATH = "${ONEKVM_EXTENSION_ROOT}/libjpeg"
+OECMAKE_RPATH = "${ONEKVM_EXTENSION_ROOT}/runtime"
 INSANE_SKIP:${PN} += "already-stripped"
 
 EXTRA_OECMAKE = "\
@@ -49,8 +58,11 @@ EXTRA_OECMAKE = "\
 "
 
 do_install:append() {
-    install -d ${D}${ONEKVM_EXTENSION_ROOT}/libjpeg
+    install -d ${D}${ONEKVM_EXTENSION_ROOT}/runtime
     jpeg_lib=$(readlink -f ${STAGING_LIBDIR}/libjpeg.so.62)
-    install -m 0755 "$jpeg_lib" ${D}${ONEKVM_EXTENSION_ROOT}/libjpeg/$(basename "$jpeg_lib")
-    ln -sf "$(basename "$jpeg_lib")" ${D}${ONEKVM_EXTENSION_ROOT}/libjpeg/libjpeg.so.62
+    install -m 0755 "$jpeg_lib" ${D}${ONEKVM_EXTENSION_ROOT}/runtime/$(basename "$jpeg_lib")
+    ln -sf "$(basename "$jpeg_lib")" ${D}${ONEKVM_EXTENSION_ROOT}/runtime/libjpeg.so.62
+    opus_lib=$(readlink -f ${STAGING_LIBDIR}/libopus.so.0)
+    install -m 0755 "$opus_lib" ${D}${ONEKVM_EXTENSION_ROOT}/runtime/$(basename "$opus_lib")
+    ln -sf "$(basename "$opus_lib")" ${D}${ONEKVM_EXTENSION_ROOT}/runtime/libopus.so.0
 }

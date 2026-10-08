@@ -57,9 +57,24 @@ once and converted to the viewer's negotiated PCM format. Viewers that do not
 advertise the QEMU audio pseudo-encoding remain video-only. Extension lifecycle
 hooks start and stop the server independently of Core.
 
+Network polling is separate from framebuffer delivery, so the initial empty
+framebuffer is never sent before valid MJPEG arrives. Incremental requests stay
+pending until their requested region changes. Damage accumulates per viewer so
+idle scenes can resume and slower viewers retain changes. ContinuousUpdates
+viewers do not need to request each frame individually.
+
+Frame and audio callbacks wake the foreground through eventfd. Native/Tight
+JPEG writes are nonblocking, with one retained frame per client; a write that
+takes over two seconds closes that client. Protocol replies wait for that
+frame to finish, and audio can wait for at most 500ms before the client is
+closed. Resizing waits for all pending JPEG writes or their timeout and can
+still take two seconds behind a slow viewer. Raw/ZRLE library writes remain
+synchronous.
+
 ## Development
 
-Build the optional keymap test with CMake:
+Optional tests cover key mappings, dirty tiles, and 8/16-bit framebuffer delivery:
+first frames, updates after idle video, multiple viewers, and ContinuousUpdates.
 
 ```sh
 cmake -S . -B build -DONEKVM_BUILD_TESTS=ON

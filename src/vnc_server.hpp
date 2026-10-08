@@ -83,6 +83,8 @@ public:
   bool Run(volatile char &exit_flag, std::string &error);
 
 private:
+  friend class VNCServerTest;
+
   struct ClientData {
     bool need_update = false;
     bool force_update = false;
@@ -96,8 +98,16 @@ private:
     std::uint8_t audio_channels = 2;
     std::uint32_t audio_frequency = 44100;
     std::uint64_t audio_resample_position = 0;
+    std::deque<std::shared_ptr<const std::vector<std::int16_t>>> deferred_audio;
+    std::size_t deferred_audio_samples = 0;
     bool logged_encoding = false;
     std::uint64_t last_sequence = 0;
+    JPEGFrame pending_jpeg;
+    std::array<std::uint8_t, 20> jpeg_header{};
+    std::size_t jpeg_header_size = 0;
+    std::size_t jpeg_written = 0;
+    int jpeg_encoding = 0;
+    std::chrono::steady_clock::time_point jpeg_started{};
     std::unique_ptr<SessionReporter> session_reporter;
   };
 
@@ -144,12 +154,18 @@ private:
                 std::string &error);
   bool SendNativeJPEG(rfbClientPtr client, const JPEGFrame &frame,
                       std::string &error);
+  bool QueueJPEG(rfbClientPtr client, const JPEGFrame &frame, int encoding,
+                 std::string &error);
   bool SendFramebuffer(rfbClientPtr client, bool force_update,
-                       std::string &error);
+                       bool &sent, std::string &error);
   bool ClientWantsNativeJPEG(rfbClientPtr client) const;
   bool ClientWantsTightJPEG(rfbClientPtr client) const;
-  bool DecodeLatestFrame(const JPEGFrame &frame, std::string &error);
-  void SuppressDirectJPEGUpdates();
+  bool DecodeLatestFrame(const JPEGFrame &frame, std::uint64_t sequence,
+                         std::string &error);
+  void PollClientEvents();
+  void Wake();
+  void FlushJPEGWrites();
+  bool HasPendingJPEG() const;
   void ClearLatestFrame();
 
   Config config_;
@@ -172,13 +188,14 @@ private:
   JPEGFrame latest_frame_;
   std::uint64_t latest_sequence_ = 0;
   std::chrono::steady_clock::time_point last_jpeg_sent_{};
-  std::chrono::steady_clock::time_point last_framebuffer_sent_{};
+  std::chrono::steady_clock::time_point last_framebuffer_processed_{};
   std::mutex audio_mutex_;
   std::deque<std::vector<std::int16_t>> audio_queue_;
   std::mutex fatal_mutex_;
   std::atomic<bool> fatal_{false};
   std::string fatal_error_;
   bool protocol_extensions_registered_ = false;
+  int wake_fd_ = -1;
   static int native_jpeg_encodings_[2];
   static rfbProtocolExtension native_jpeg_extension_;
   static int audio_encodings_[2];

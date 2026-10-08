@@ -67,15 +67,15 @@ else()
   set(ONEKVM_VNC_TARGET PkgConfig::LIBVNCSERVER)
 endif()
 
-add_executable(onekvm-protocol-vnc
+set(ONEKVM_VNC_RUNTIME_SOURCES
   src/admin_hid.cpp
   src/config.cpp
   src/jpeg_rgb.cpp
   src/keymap.cpp
-  src/main.cpp
   src/protocol_ipc.cpp
   src/vnc_server.cpp
 )
+add_executable(onekvm-protocol-vnc src/main.cpp ${ONEKVM_VNC_RUNTIME_SOURCES})
 target_include_directories(onekvm-protocol-vnc PRIVATE
   ${ONEKVM_VNC_INCLUDE_DIRS}
 )
@@ -110,4 +110,13 @@ if(ONEKVM_BUILD_TESTS)
   target_include_directories(jpeg-tiles-test PRIVATE src)
   target_compile_options(jpeg-tiles-test PRIVATE -Wall -Wextra -Wpedantic)
   add_test(NAME jpeg-tiles-test COMMAND jpeg-tiles-test)
+  add_executable(framebuffer-update-test
+    tests/framebuffer_update_test.cpp ${ONEKVM_VNC_RUNTIME_SOURCES})
+  target_include_directories(framebuffer-update-test PRIVATE
+    src ${ONEKVM_VNC_INCLUDE_DIRS})
+  target_compile_options(framebuffer-update-test PRIVATE -Wall -Wextra -Wpedantic)
+  target_link_libraries(framebuffer-update-test PRIVATE
+    PkgConfig::JSON_C PkgConfig::LIBJPEG PkgConfig::OPUS
+    ${ONEKVM_VNC_TARGET} Threads::Threads)
+  add_test(NAME framebuffer-update-test COMMAND framebuffer-update-test)
 endif()
