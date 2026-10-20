@@ -7,7 +7,7 @@ LIC_FILES_CHKSUM = "\
     file://LICENSES/Papirus-GPL-3.0.txt;md5=1ebbd3e34237af26da5dc08a4e440464 \
     file://${ONEKVM_LIBVNCSERVER_SOURCE}/COPYING;md5=361b6b837cad26c6900a926b62aada5f \
 "
-PR = "r3"
+PR = "r4"
 
 ONEKVM_COMPONENT_GIT_URI ??= "git://github.com/onekvm/onekvm-extension-vnc.git;protocol=https;branch=main"
 ONEKVM_COMPONENT_SRCREV ??= ""
