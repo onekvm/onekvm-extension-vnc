@@ -127,7 +127,7 @@ public:
     config.media_socket = "/nonexistent-vnc-test-media";
     config.admin_socket = "/nonexistent-vnc-test-hid";
     std::string error;
-    VNCServer server(config, {}, {64, 64, 16667}, error);
+    VNCServer server(config, {}, {64, 64, 16667, false}, error);
     Require(server.Ready(), error.c_str());
     auto fast = AddPeer(server, 16);
     auto slow = AddPeer(server, 16);
@@ -237,7 +237,7 @@ public:
     config.media_socket = "/nonexistent-vnc-test-media";
     config.admin_socket = "/nonexistent-vnc-test-hid";
     std::string error;
-    VNCServer server(config, {}, {64, 64, 16667}, error);
+    VNCServer server(config, {}, {64, 64, 16667, false}, error);
     Require(server.Ready(), error.c_str());
     auto peer = AddPeer(server, 16);
     auto *client = server.server_->clientHead;
@@ -313,7 +313,7 @@ public:
     config.media_socket = "/nonexistent-vnc-test-media";
     config.admin_socket = "/nonexistent-vnc-test-hid";
     std::string error;
-    VNCServer server(config, {}, {64, 64, 16667}, error);
+    VNCServer server(config, {}, {64, 64, 16667, false}, error);
     Require(server.Ready(), error.c_str());
     server.server_->deferUpdateTime = 0;
     auto first = AddPeer(server, bits);

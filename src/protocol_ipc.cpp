@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <opus/opus.h>
 #include <poll.h>
+#include <sys/eventfd.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -39,12 +40,17 @@ constexpr std::uint32_t kRingSlotHeaderSize = 64;
 constexpr std::uint32_t kRingStateFree = 0;
 constexpr std::uint32_t kRingStateReady = 2;
 constexpr std::uint32_t kRingStateReading = 3;
+constexpr std::uint8_t kInfoFlagAudioAvailable = 1U << 0U;
+constexpr std::uint8_t kInfoFlagEventsSupported = 1U << 2U;
+constexpr std::uint8_t kInfoFlagValid = 1U << 7U;
 
 struct Frame {
   Codec codec;
   std::uint32_t duration_us;
   std::uint16_t width;
   std::uint16_t height;
+  bool audio_available = true;
+  bool events_supported = false;
   std::shared_ptr<std::vector<std::uint8_t>> payload;
 };
 
@@ -415,6 +421,10 @@ bool ReadFrame(int fd, Frame &frame, std::string &error) {
   frame.duration_us = ReadBE32(header.data() + 24);
   frame.width = ReadBE16(header.data() + 28);
   frame.height = ReadBE16(header.data() + 30);
+  frame.audio_available = (header[7] & kInfoFlagValid) == 0 ||
+                          (header[7] & kInfoFlagAudioAvailable) != 0;
+  frame.events_supported = (header[7] & kInfoFlagValid) != 0 &&
+                           (header[7] & kInfoFlagEventsSupported) != 0;
   frame.payload = std::make_shared<std::vector<std::uint8_t>>(length);
   return length == 0 || ReadAll(fd, frame.payload->data(), length, error);
 }
@@ -488,8 +498,115 @@ bool QueryVideoInfo(const std::string &socket_path, const Identity &identity,
     error = "invalid MJPEG video metadata";
     return false;
   }
-  info = VideoInfo{frame.width, frame.height, frame.duration_us};
+  info = VideoInfo{frame.width, frame.height, frame.duration_us,
+                   frame.audio_available, frame.events_supported};
   return true;
+}
+
+CapabilitySubscription::CapabilitySubscription(
+    std::string socket_path, Identity identity, bool events_supported,
+    std::function<void(VideoInfo)> callback,
+    std::function<void(std::string)> failed)
+    : socket_path_(std::move(socket_path)), identity_(std::move(identity)),
+      callback_(std::move(callback)), failed_(std::move(failed)),
+      events_supported_(events_supported) {}
+
+CapabilitySubscription::~CapabilitySubscription() {
+  Stop();
+  if (wake_fd_ >= 0)
+    close(wake_fd_);
+}
+void CapabilitySubscription::Start() {
+  if (thread_.joinable())
+    return;
+  if (!events_supported_ && wake_fd_ < 0) {
+    wake_fd_ = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    if (wake_fd_ < 0) {
+      failed_("create capability wakeup");
+      return;
+    }
+  }
+  if (wake_fd_ >= 0) {
+    std::uint64_t pending;
+    while (read(wake_fd_, &pending, sizeof(pending)) < 0 && errno == EINTR) {}
+  }
+  stopping_.store(false);
+  thread_ = std::thread([this] { Run(); });
+}
+void CapabilitySubscription::Stop() {
+  stopping_.store(true);
+  if (wake_fd_ >= 0) {
+    const std::uint64_t wake = 1;
+    while (write(wake_fd_, &wake, sizeof(wake)) < 0 && errno == EINTR) {
+    }
+  }
+  const int fd = socket_fd_.load();
+  if (fd >= 0)
+    shutdown(fd, SHUT_RDWR);
+  if (thread_.joinable())
+    thread_.join();
+}
+void CapabilitySubscription::Run() {
+  std::string error;
+  while (!stopping_.load()) {
+    const int fd = ConnectUnix(socket_path_, 3000, error);
+    if (fd < 0) {
+      if (!stopping_.load())
+        failed_(error);
+      return;
+    }
+    socket_fd_.store(fd);
+    const timeval timeout{5, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    if (stopping_.load()) {
+      CloseOwnedSocket(socket_fd_, fd);
+      return;
+    }
+    if (WriteAll(fd,
+                 SubscriptionJSON(identity_,
+                                  events_supported_ ? "info-events" : "info", 0,
+                                  0, false, "mjpeg"),
+                 error)) {
+      while (!stopping_.load()) {
+        pollfd descriptor{fd, POLLIN, 0};
+        int result;
+        do {
+          result = poll(&descriptor, 1, events_supported_ ? -1 : 5000);
+        } while (result < 0 && errno == EINTR && !stopping_.load());
+        if (result <= 0 || stopping_.load())
+          break;
+        Frame frame{};
+        if (!ReadFrame(fd, frame, error))
+          break;
+        if (!frame.payload->empty() || frame.width == 0 || frame.height == 0 ||
+            frame.duration_us == 0 || frame.codec != Codec::kMJPEG) {
+          error = "invalid video capability event";
+          break;
+        }
+        callback_(VideoInfo{frame.width, frame.height, frame.duration_us,
+                            frame.audio_available, frame.events_supported});
+        if (!events_supported_) {
+          CloseOwnedSocket(socket_fd_, fd);
+          events_supported_ = frame.events_supported;
+          if (!stopping_.load()) {
+            pollfd wake{wake_fd_, POLLIN, 0};
+            int waited;
+            do {
+              waited = poll(&wake, 1, 1000);
+            } while (waited < 0 && errno == EINTR && !stopping_.load());
+          }
+          break;
+        }
+      }
+    }
+    if (socket_fd_.load() == -1)
+      continue;
+    CloseOwnedSocket(socket_fd_, fd);
+    if (!stopping_.load())
+      failed_(error.empty() ? "video capability subscription closed" : error);
+    return;
+  }
 }
 
 SessionReporter::SessionReporter(const std::string &socket_path,

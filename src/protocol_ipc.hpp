@@ -27,6 +27,8 @@ struct VideoInfo {
   std::uint16_t width = 0;
   std::uint16_t height = 0;
   std::uint32_t duration_us = 0;
+  bool audio_available = true;
+  bool events_supported = false;
 };
 
 struct JPEGFrame {
@@ -42,6 +44,28 @@ bool LoadIdentity(Identity &identity, std::string &error);
 bool QueryVideoInfo(const std::string &socket_path, const Identity &identity,
                     int fps, int jpeg_quality, VideoInfo &info,
                     std::string &error);
+
+class CapabilitySubscription {
+public:
+  CapabilitySubscription(std::string socket_path, Identity identity,
+                         bool events_supported,
+                         std::function<void(VideoInfo)> callback,
+                         std::function<void(std::string)> failed);
+  ~CapabilitySubscription();
+  void Start();
+  void Stop();
+private:
+  void Run();
+  std::string socket_path_;
+  Identity identity_;
+  std::function<void(VideoInfo)> callback_;
+  std::function<void(std::string)> failed_;
+  std::atomic<bool> stopping_{false};
+  std::atomic<int> socket_fd_{-1};
+  bool events_supported_;
+  int wake_fd_ = -1;
+  std::thread thread_;
+};
 
 class SessionReporter {
 public:

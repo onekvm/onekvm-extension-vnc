@@ -22,6 +22,7 @@
   "author": "OneKVM",
   "homepage": "https://github.com/onekvm/onekvm-extension-vnc",
   "entrypoint": "bin/onekvm-protocol-vnc",
+  "socket_activation": {"address_setting": "listen_address", "port_setting": "port"},
   "permissions": ["network"],
   "capabilities": ["video.mjpeg", "video.encoded", "hid"],
   "services": [{

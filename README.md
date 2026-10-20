@@ -32,6 +32,17 @@ onekvm-extension enable vnc
 onekvm-extension disable vnc
 ```
 
+An enabled extension uses systemd socket activation (`Accept=no`). Only the
+listener remains while idle; the first TCP connection starts the protocol
+process with systemd's listening socket. After all clients leave, the process
+exits following 30 seconds of idle time and the next connection starts it
+again. Disabling the
+extension closes the listener and terminates its clients; changes to the bind
+address or port recreate the socket. Bind addresses must be numeric IPv4 or
+IPv6 addresses. This requires an Extension Host with `socket_activation`
+support; manual execution without an inherited socket retains the normal
+resident-server behavior.
+
 ## Configure and connect
 
 Open the **VNC** extension settings. The server listens on `0.0.0.0:5900` by
@@ -56,6 +67,10 @@ only after a compatible viewer enables it; the shared Opus stream is decoded
 once and converted to the viewer's negotiated PCM format. Viewers that do not
 advertise the QEMU audio pseudo-encoding remain video-only. Extension lifecycle
 hooks start and stop the server independently of Core.
+
+Core metadata capabilities are subscribed through one persistent authenticated
+IPC connection. Audio setting changes trigger the existing extension restart
+path. Older Core versions retain the one-second metadata probe fallback.
 
 Network polling is separate from framebuffer delivery, so the initial empty
 framebuffer is never sent before valid MJPEG arrives. Incremental requests stay

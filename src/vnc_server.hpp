@@ -3,6 +3,7 @@
 #include "admin_hid.hpp"
 #include "config.hpp"
 #include "protocol_ipc.hpp"
+#include "socket_activation.hpp"
 
 #include <rfb/rfb.h>
 
@@ -74,7 +75,7 @@ private:
 class VNCServer {
 public:
   VNCServer(const Config &config, Identity identity, const VideoInfo &info,
-            std::string &error);
+            std::string &error, int listen_fd = -1);
   ~VNCServer();
   VNCServer(const VNCServer &) = delete;
   VNCServer &operator=(const VNCServer &) = delete;
@@ -184,6 +185,7 @@ private:
   unsigned int clients_ = 0;
   std::uint16_t width_ = 0;
   std::uint16_t height_ = 0;
+  bool audio_available_ = false;
   std::mutex frame_mutex_;
   JPEGFrame latest_frame_;
   std::uint64_t latest_sequence_ = 0;
@@ -196,6 +198,8 @@ private:
   std::string fatal_error_;
   bool protocol_extensions_registered_ = false;
   int wake_fd_ = -1;
+  bool socket_activated_ = false;
+  onekvm::activation::IdleTimeout idle_timeout_;
   static int native_jpeg_encodings_[2];
   static rfbProtocolExtension native_jpeg_extension_;
   static int audio_encodings_[2];

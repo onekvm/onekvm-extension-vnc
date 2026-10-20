@@ -30,6 +30,13 @@ onekvm-extension enable vnc
 onekvm-extension disable vnc
 ```
 
+启用后使用 systemd socket activation（`Accept=no`）：空闲时只保留监听
+Socket，首个 TCP 连接触发协议进程启动。全部客户端离开后，进程空闲 30 秒
+退出，下次连接自动重新唤醒。
+禁用扩展会关闭监听并断开客户端；修改监听地址或端口会重建 Socket。
+监听地址使用 IPv4 或 IPv6 数字地址。此功能需要支持 `socket_activation`
+的扩展宿主；未继承 systemd Socket 时手工运行仍采用常驻服务模式。
+
 ## 配置与连接
 
 打开 **VNC** 扩展设置。服务默认监听 `0.0.0.0:5900`，通常可以使用以下
@@ -51,6 +58,9 @@ encoding 21。协商了原生 JPEG 或 Tight JPEG 的客户端直接收硬件 MJ
 脏矩形）。客户端输入映射为已鉴权的 OneKVM HID 操作。只有 Viewer 声明并启用
 QEMU 音频后才订阅共享 Opus 流，解码一次后按协商参数转换为 PCM；没有声明
 QEMU 音频能力的 Viewer 保持纯视频连接。
+
+Core 能力通过一条持久鉴权 IPC 连接订阅；音频设置变化会沿用扩展重启流程
+更新 RFB 音频能力。连接旧 Core 时保留每秒一次的查询兼容路径。
 
 网络事件轮询与画面发送分开处理，首张有效 MJPEG 到达前不会发送初始空帧。
 增量更新请求在请求区域出现变化前保持等待；脏区域按客户端累积，避免静止

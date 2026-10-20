@@ -451,10 +451,10 @@ rfbProtocolExtension VNCServer::continuous_extension_ = {
 };
 
 VNCServer::VNCServer(const Config &config, Identity identity,
-                     const VideoInfo &info, std::string &error)
+                     const VideoInfo &info, std::string &error, int listen_fd)
     : config_(config), identity_(std::move(identity)),
       hid_(config.admin_socket, identity_), input_(hid_), width_(info.width),
-      height_(info.height) {
+      height_(info.height), audio_available_(info.audio_available) {
   if (!AllocateFramebuffer(width_, height_, framebuffer_, error))
     return;
   wake_fd_ = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
@@ -521,6 +521,18 @@ VNCServer::VNCServer(const Config &config, Identity identity,
   rfbRegisterProtocolExtension(&audio_extension_);
   rfbRegisterProtocolExtension(&continuous_extension_);
   protocol_extensions_registered_ = true;
+  if (listen_fd >= 0) {
+    // LibVNCServer's bundled systemd integration handles accepted sockets,
+    // so adopt the Accept=no listener directly without rebinding the port.
+    socket_activated_ = true;
+    server_->port = -1;
+    server_->ipv6port = -1;
+    server_->socketState = RFB_SOCKET_READY;
+    server_->listenSock = listen_fd;
+    FD_ZERO(&server_->allFds);
+    FD_SET(listen_fd, &server_->allFds);
+    server_->maxFd = listen_fd;
+  }
   rfbInitServer(server_);
   const bool ipv4_ready =
       server_->port < 0 || server_->listenSock != RFB_INVALID_SOCKET;
@@ -675,6 +687,9 @@ rfbBool VNCServer::AudioEnableEncoding(rfbClientPtr client, void **,
     return FALSE;
   auto *data = static_cast<ClientData *>(client->clientData);
   if (data == nullptr)
+    return FALSE;
+  auto *server = static_cast<VNCServer *>(client->screen->screenData);
+  if (server == nullptr || !server->audio_available_)
     return FALSE;
   data->audio_supported = true;
   data->audio_capability_pending = true;
@@ -848,6 +863,8 @@ void VNCServer::SyncSubscription() {
 }
 
 void VNCServer::SyncAudioSubscription() {
+  if (!audio_available_)
+    return;
   bool wanted = false;
   auto iterator = rfbGetClientIterator(server_);
   rfbClientPtr client;
@@ -1479,6 +1496,10 @@ bool VNCServer::Run(volatile char &exit_flag, std::string &error) {
       return false;
     if (!ProcessFrame(error))
       return false;
+    if (socket_activated_ && idle_timeout_.Expired(clients_ != 0)) {
+      std::cerr << "onekvm-protocol-vnc: idle for 30 seconds; returning listener to systemd\n";
+      return true;
+    }
   }
   if (fatal_.load()) {
     std::lock_guard lock(fatal_mutex_);
